@@ -4,6 +4,9 @@ IQ Option-এর জন্য একটি সম্পূর্ণ **modular tr
 প্রতিটি layer আলাদাভাবে ব্যবহার/টেস্ট করা যায়, আর `IQOptionClient` হলো সবকিছুকে একসাথে বেঁধে দেওয়া facade।
 
 > `core.py` / `main.py` এই মডিউলের অংশ নয় — সেগুলো আলাদা diagnostic/application project।
+>
+> লাইভ বট + ব্যাকটেস্ট আলাদা প্যাকেজ: [`userbot/`](userbot/README.md)
+> (`bot.py`, `core.py`, `backtest.py`, প্লাগইন `strategies/` — `.env` দিয়ে কনফিগ)।
 
 ---
 
