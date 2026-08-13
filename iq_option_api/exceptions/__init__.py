@@ -1,0 +1,43 @@
+"""Standardized error system for the IQ Option API module."""
+
+from .exceptions import (  # noqa: F401
+    AccountError,
+    AssetError,
+    AuthenticationError,
+    BalanceError,
+    ConnectionError,
+    IQConnectionError,
+    IQOptionError,
+    IQTimeoutError,
+    InstrumentError,
+    MarketError,
+    OrderError,
+    PositionError,
+    ProtocolError,
+    RiskError,
+    SessionError,
+    TimeoutError,
+    TwoFactorRequired,
+    ConfigurationError,
+)
+
+__all__ = [
+    "IQOptionError",
+    "AuthenticationError",
+    "TwoFactorRequired",
+    "SessionError",
+    "ConnectionError",
+    "IQConnectionError",
+    "AccountError",
+    "MarketError",
+    "AssetError",
+    "InstrumentError",
+    "OrderError",
+    "PositionError",
+    "BalanceError",
+    "ProtocolError",
+    "TimeoutError",
+    "IQTimeoutError",
+    "RiskError",
+    "ConfigurationError",
+]

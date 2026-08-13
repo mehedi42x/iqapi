@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# runtime artefacts / secrets
+session.json
+iq_config.json
+*.log
+.iq_option_api/
