@@ -496,6 +496,26 @@ class WebSocketClient:
         rid = request_id or self.protocol.next_request_id()
         return self.send_frame(build_message(name, msg), request_id=rid)
 
+    def send_websocket_request(self, name: str, msg: Any,
+                               request_id: str = "") -> str:
+        """Send one IQ Option wire frame, compatible with the reference API.
+
+        ``Lu-Yi-Hsun/iqoptionapi`` exposes this small primitive and its
+        channel classes build every operation on top of it.  Keeping it here
+        makes the protocol genuinely point-to-point: callers can send a raw
+        channel (``ssid``, ``heartbeat``, ``subscribeMessage`` or
+        ``sendMessage``) without bypassing our locking, encoding and counters.
+        An explicitly supplied request id is preserved, including the
+        reference implementation's empty-string default.
+        """
+        frame = build_message(name, msg, request_id=str(request_id))
+        return self.send_frame(frame)
+
+    @property
+    def websocket(self) -> Any:
+        """The active socket adapter (reference API compatibility)."""
+        return self._app
+
     def send_request(self, name: str, msg: Any, *,
                      timeout: Optional[float] = None,
                      matcher: Optional[Callable[[Dict[str, Any]], bool]] = None,
@@ -603,9 +623,9 @@ class WebSocketClient:
                 if not self.is_connected:
                     continue
                 try:
-                    self.send(FRAME_SEND_MESSAGE, {
-                        "name": FRAME_HEARTBEAT,
-                        "body": {"userTime": int(time.time() * 1000)},
+                    self.send(FRAME_HEARTBEAT, {
+                        "heartbeatTime": int(time.time() * 1000),
+                        "userTime": int(self.server_time * 1000),
                     })
                 except Exception as exc:  # pragma: no cover
                     self.log.debug("heartbeat failed: %s", exc)
@@ -614,10 +634,17 @@ class WebSocketClient:
         self._heartbeat_thread.start()
 
     def _reply_heartbeat(self, payload: Any) -> None:
+        """Reply on the direct ``heartbeat`` channel (not sendMessage).
+
+        The reference client answers the server's heartbeat frame directly;
+        wrapping this in a microservice call is a different wire protocol and
+        can leave the session disconnected even though the socket is open.
+        """
         try:
-            self.send(FRAME_SEND_MESSAGE, {
-                "name": FRAME_HEARTBEAT,
-                "body": {"userTime": int(time.time() * 1000)},
+            heartbeat_time = payload.get("heartbeatTime") if isinstance(payload, dict) else payload
+            self.send(FRAME_HEARTBEAT, {
+                "heartbeatTime": int(heartbeat_time or time.time() * 1000),
+                "userTime": int(self.server_time * 1000),
             })
         except Exception:  # pragma: no cover
             pass
