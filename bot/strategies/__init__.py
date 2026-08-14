@@ -28,7 +28,7 @@ _SKIP = {"base", "indicators"}
 
 
 def _ensure_import_path() -> None:
-    """Make both ``import strategies`` and ``import userbot.strategies`` work."""
+    """Make both ``import strategies`` and ``import bot.strategies`` work."""
     parent = str(_PKG_DIR.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
@@ -63,7 +63,7 @@ def discover() -> Dict[str, Strategy]:
             module = importlib.import_module(f"strategies.{info.name}")
         except Exception:
             try:
-                module = importlib.import_module(f"userbot.strategies.{info.name}")
+                module = importlib.import_module(f"bot.strategies.{info.name}")
             except Exception:
                 continue
         for cls in _classes_in(module):

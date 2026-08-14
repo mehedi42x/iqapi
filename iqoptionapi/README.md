@@ -1,10 +1,10 @@
-# api — বট-ফেসিং মডিউল সিস্টেম
+# iqoptionapi — বট-ফেসিং মডিউল সিস্টেম
 
 API এখানে শুধু **দালালের মতো কাজ করে** — বট যা চাইবে, তাই এনে দেবে।
 কোনো strategy, কোনো অপ্রয়োজনীয় logic নেই। প্রতিটি module এক লাইনের কল।
 
 ```
-api/
+iqoptionapi/
 ├── manager.py   ← সব module-কে maintain করে (IQAPI — একটাই entry point)
 ├── auth.py      ← login, ssid, balance, account type change, symbol set, account set
 ├── blitz.py     ← blitz-এর যাবতীয় সব control
@@ -15,13 +15,13 @@ api/
 ```
 
 ভেতরে সব কাজ করে আগের layered engine (`iq_option_api/`) — connection,
-Cloudflare/TLS, reconnect, request correlation সব ওখানেই। এই `api/`
+Cloudflare/TLS, reconnect, request correlation সব ওখানেই। এই `iqoptionapi/`
 প্যাকেজটা তার উপরে বসানো পাতলা, বট-বান্ধব চেহারা।
 
 ## Quick start
 
 ```python
-from api import IQAPI
+from iqoptionapi import IQAPI
 
 with IQAPI() as iq:                      # credentials: IQ_EMAIL / IQ_PASSWORD env
     # --- auth ---------------------------------------------------------

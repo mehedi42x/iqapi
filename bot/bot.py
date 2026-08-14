@@ -4,7 +4,7 @@
     python bot.py
     python bot.py --dry-run
     python bot.py --strategy digital_ai --asset XAUUSD
-    python -m userbot
+    python -m bot
 """
 
 from __future__ import annotations
@@ -19,22 +19,26 @@ from typing import Optional
 try:
     from core import (
         ENV_PATH,
+        RUNTIME_DIR,
         EnvConfig,
         Interrupted,
         UserBotCore,
         format_money,
         format_tf,
+        init_runtime,
         list_strategies,
         setup_logging,
     )
-except ImportError:  # python -m userbot.bot from the repo root
-    from userbot.core import (
+except ImportError:  # python -m bot.bot from the repo root
+    from bot.core import (
         ENV_PATH,
+        RUNTIME_DIR,
         EnvConfig,
         Interrupted,
         UserBotCore,
         format_money,
         format_tf,
+        init_runtime,
         list_strategies,
         setup_logging,
     )
@@ -73,8 +77,10 @@ def row(key: str, value: str) -> None:
 
 
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="bot.py", description="IQ Option userbot")
+    p = argparse.ArgumentParser(prog="bot", description="IQ Option userbot")
     p.add_argument("--env", default=str(ENV_PATH), help="path to .env")
+    p.add_argument("--init", action="store_true",
+                   help="scaffold the writable runtime dir (.env, logs, data) and exit")
     p.add_argument("--strategy", help="override STRATEGY")
     p.add_argument("--asset", help="override ASSET")
     p.add_argument("--amount", type=float, help="override AMOUNT")
@@ -149,6 +155,15 @@ def main(argv: Optional[list] = None) -> int:
     args = parse_args(argv)
     if args.list_only:
         print_catalog()
+        return 0
+
+    if args.init:
+        init_runtime()
+        print(f" {green('●')} runtime dir: {bold(str(RUNTIME_DIR))}")
+        print(f"   env:   {dim(str(RUNTIME_DIR / '.env'))}")
+        print(f"   logs:  {dim(str(RUNTIME_DIR / 'logs'))}")
+        print(f"   data:  {dim(str(RUNTIME_DIR / 'data'))}")
+        print(dim(f"   edit {RUNTIME_DIR / '.env'}  →  IQ_EMAIL / IQ_PASSWORD"))
         return 0
 
     cfg = EnvConfig.load(args.env)
@@ -234,6 +249,15 @@ def main(argv: Optional[list] = None) -> int:
         print_summary(core)
         core.disconnect()
     return exit_code
+
+
+def console_main() -> int:
+    """Entry point for the installed ``bot`` console command.
+
+    Mirrors ``python -m bot``: runs :func:`main` and translates its
+    integer return code into the process exit code.
+    """
+    raise SystemExit(main())
 
 
 if __name__ == "__main__":

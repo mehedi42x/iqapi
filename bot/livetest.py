@@ -4,7 +4,7 @@
     python livetest.py              # connect, probe every layer, place $1 trades
     python livetest.py --no-trade   # read-only (no orders)
 
-Credentials come from ``userbot/.env`` (never from source).  REAL accounts
+Credentials come from ``bot/.env`` (never from source).  REAL accounts
 are refused — this script will not spend live money.
 """
 

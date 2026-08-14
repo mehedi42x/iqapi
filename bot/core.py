@@ -23,18 +23,49 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 # ---------------------------------------------------------------------------
-# Import path: works as ``python bot.py``, ``python -m userbot``, or
-# ``python userbot/bot.py`` from the repo root.
+# Import path: works as ``python bot.py``, ``python -m bot``, or
+# ``python bot/bot.py`` from the repo root.
 # ---------------------------------------------------------------------------
-USERBOT_DIR = Path(__file__).resolve().parent
-REPO_DIR = USERBOT_DIR.parent
-ENV_PATH = USERBOT_DIR / ".env"
-LOG_DIR = USERBOT_DIR / "logs"
-DATA_DIR = USERBOT_DIR / "data"
+BOT_DIR = Path(__file__).resolve().parent
+REPO_DIR = BOT_DIR.parent
+ENV_EXAMPLE = BOT_DIR / ".env.example"
+
+# Writable state lives in a runtime dir (see bot.runtime_dir).  Computed here
+# rather than importing ``bot`` so ``python bot.py`` from inside the ``bot/``
+# folder works too (there ``bot`` resolves to bot.py, not the package).
+def _runtime_dir() -> Path:
+    """Runtime dir for writable state: override -> source dir -> ~/.iqapi."""
+    override = os.environ.get("IQ_USERBOT_DIR")
+    if override:
+        d = Path(override).expanduser()
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    if (BOT_DIR / ".env").is_file():
+        return BOT_DIR
+    home = Path.home() / ".iqapi"
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+RUNTIME_DIR = _runtime_dir()
+ENV_PATH = RUNTIME_DIR / ".env"
+LOG_DIR = RUNTIME_DIR / "logs"
+DATA_DIR = RUNTIME_DIR / "data"
+
+
+def init_runtime(*, force: bool = False) -> Path:
+    """Scaffold the writable runtime dir: ``logs/``, ``data/`` and a ``.env``
+    (copied from ``.env.example`` on first run).  Returns :data:`RUNTIME_DIR`."""
+    for d in (RUNTIME_DIR, LOG_DIR, DATA_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+    env = RUNTIME_DIR / ".env"
+    if (not env.exists() or force) and ENV_EXAMPLE.exists():
+        env.write_text(ENV_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    return RUNTIME_DIR
 
 
 def _bootstrap() -> None:
-    for path in (REPO_DIR, USERBOT_DIR):
+    for path in (REPO_DIR, BOT_DIR):
         text = str(path)
         if text not in sys.path:
             sys.path.insert(0, text)
@@ -46,8 +77,8 @@ try:
     from strategies import discover, list_strategies, load_strategy
     from strategies.base import Signal, Strategy, closed_candles
 except ImportError:  # pragma: no cover - package-style invocation
-    from userbot.strategies import discover, list_strategies, load_strategy
-    from userbot.strategies.base import Signal, Strategy, closed_candles
+    from bot.strategies import discover, list_strategies, load_strategy
+    from bot.strategies.base import Signal, Strategy, closed_candles
 
 
 # ===========================================================================
@@ -1106,7 +1137,7 @@ class UserBotCore:
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 
-def setup_logging(level: str = "INFO", *, name: str = "userbot",
+def setup_logging(level: str = "INFO", *, name: str = "bot",
                   console_level: str = "WARNING") -> logging.Logger:
     """Full detail goes to the log file; the terminal stays clean."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -1137,5 +1168,6 @@ __all__ = [
     "discover", "list_strategies", "load_strategy",
     "setup_logging", "parse_timeframe", "format_tf", "format_money",
     "expand_assets", "is_gold", "pick_auto_strategy",
-    "USERBOT_DIR", "REPO_DIR", "ENV_PATH",
+    "BOT_DIR", "REPO_DIR", "RUNTIME_DIR", "ENV_PATH",
+    "LOG_DIR", "DATA_DIR", "ENV_EXAMPLE", "init_runtime",
 ]

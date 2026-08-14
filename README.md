@@ -3,13 +3,13 @@
 IQ Option-এর জন্য একটি সম্পূর্ণ **modular trading API module**। প্রতিটি capability আলাদা layer-এ,
 প্রতিটি layer আলাদাভাবে ব্যবহার/টেস্ট করা যায়, আর `IQOptionClient` হলো সবকিছুকে একসাথে বেঁধে দেওয়া facade।
 
-> **বটের জন্য সহজ মুখ:** [`api/`](api/README.md) — flat module সিস্টেম
+> **বটের জন্য সহজ মুখ:** [`iqoptionapi/`](iqoptionapi/README.md) — flat module সিস্টেম
 > (`auth.py`, `blitz.py`, `binary.py`, `digital.py`, `forex.py`, `data.py`,
 > আর `manager.py` যেটা সব module maintain করে)। API এখানে দালালের মতো —
 > বট যা চাইবে তাই এনে দেবে, বাড়তি কিছু নেই:
 >
 > ```python
-> from api import IQAPI
+> from iqoptionapi import IQAPI
 > with IQAPI() as iq:
 >     iq.auth.set_account("PRACTICE")
 >     iq.auth.set_symbol("EURUSD-OTC")
@@ -19,8 +19,50 @@ IQ Option-এর জন্য একটি সম্পূর্ণ **modular tr
 >
 > `core.py` / `main.py` এই মডিউলের অংশ নয় — সেগুলো আলাদা diagnostic/application project।
 >
-> লাইভ বট + ব্যাকটেস্ট আলাদা প্যাকেজ: [`userbot/`](userbot/README.md)
+> লাইভ বট + ব্যাকটেস্ট আলাদা প্যাকেজ: [`bot/`](bot/README.md)
 > (`bot.py`, `core.py`, `backtest.py`, প্লাগইন `strategies/` — `.env` দিয়ে কনফিগ)।
+
+---
+
+## pip install (`iqapi`)
+
+The whole project is one pip-installable distribution named **`iqapi`**. It
+ships two importable packages — `iqoptionapi` (the bot-facing facade) and
+`bot` (the live trader) — and provides a `bot` console command.
+
+```bash
+# 1) the layered websocket engine is NOT bundled here and is not on PyPI —
+#    install it from your own source/index first:
+pip install -e /path/to/iq_option_api
+
+# 2) install this project (editable keeps everything in the repo):
+pip install -e .          # or:  pip install .
+
+# 3) scaffold the writable runtime dir (creates ~/.iqapi/.env, logs, data):
+bot --init
+# then edit ~/.iqapi/.env  →  IQ_EMAIL / IQ_PASSWORD
+
+# 4) run it — from the repo root, or cd into bot/ and run the same thing
+bot --list                # installed strategies
+bot --dry-run             # signals only
+bot --strategy digital_ai --asset XAUUSD
+```
+
+The `bot` command is the same as `python -m bot` (both call
+`bot.bot:main`). All writable state (`.env`, `logs/`, `data/`,
+`ai_weights.json`) lives in a runtime dir resolved by
+`bot.runtime_dir()` — override it with the `IQ_USERBOT_DIR` env var.
+
+Using it as a library from code:
+
+```python
+from iqoptionapi import IQAPI     # thin facade over iq_option_api
+with IQAPI() as iq:
+    iq.auth.set_account("PRACTICE")
+    iq.auth.set_symbol("EURUSD-OTC")
+    iq.binary.set_amount(1)
+    print(iq.binary.result(iq.binary.call()).result)
+```
 
 ---
 
@@ -201,9 +243,3 @@ broadcast করে (`digital-option-placed` / `option-opened` / `option-rejecte
 `Candle`-এ এখন `ask`, `bid`, `phase` আর `spread` প্রপার্টি আছে (হিস্টোরিক্যাল ক্যান্ডেলে `None`)।
 অ্যাকাউন্ট সিলেক্ট করলেই `PositionManager` সেই `user_balance_id`-তে bind হয়ে যায়, তাই রেজাল্ট
 পোলিং কখনো অন্য ব্যালেন্স থেকে পজিশন পড়ে না।
-
-অফলাইনে সব ফিক্স যাচাই:
-
-```bash
-python3 tools/offline_check.py     # 25 checks, কোনো credential লাগে না
-```
