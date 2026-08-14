@@ -325,15 +325,26 @@ class Authenticator:
     # ==================================================================
     def connect_and_authenticate(self, *, force_login: bool = False,
                                  two_factor_code: Optional[str] = None) -> bool:
-        """Full path: restore-or-login, connect, authenticate."""
-        if not self.ws.is_connected:
-            self.ws.connect()
+        """Full path: restore-or-login, connect, authenticate.
 
+        Order matches the known-good IQ Option snippet that works on Termux:
+
+        1. HTTP ``POST /api/v2/login`` → SSID
+        2. Open ``wss://…/echo/websocket`` with ``Cookie: ssid=…``
+        3. Send the ``ssid`` frame
+
+        Connecting the socket *before* login was why the bot never attached
+        the session cookie to the handshake.
+        """
         if force_login or not self.session.ssid:
             if not force_login and self.restore():
                 self.log.debug("using restored SSID")
             else:
                 self.login(two_factor_code=two_factor_code)
+        cookies = self._sync_cookies()
+
+        if not self.ws.is_connected:
+            self.ws.connect(cookies=cookies)
 
         try:
             return self.authenticate()
@@ -342,6 +353,9 @@ class Authenticator:
             self.store.clear()
             self.session.clear()
             self.login(two_factor_code=two_factor_code)
+            cookies = self._sync_cookies()
+            if not self.ws.is_connected:
+                self.ws.connect(cookies=cookies)
             return self.authenticate()
 
     def validate_session(self, *, max_idle: float = 300.0) -> bool:

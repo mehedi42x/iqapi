@@ -297,6 +297,7 @@ class IQConfig:
                 enable_ssl=_env_bool(f"{p}SSL", default=True),
                 proxy=_env(f"{p}PROXY"),
                 user_agent=_env(f"{p}USER_AGENT", default=DEFAULT_USER_AGENT) or DEFAULT_USER_AGENT,
+                impersonate=_env(f"{p}IMPERSONATE", default=DEFAULT_IMPERSONATE) or DEFAULT_IMPERSONATE,
                 origin=_env(f"{p}ORIGIN"),
                 subprotocols=_env_tuple(_env(f"{p}WS_PROTOCOL")),
             ),

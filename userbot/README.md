@@ -36,9 +36,16 @@ cp userbot/.env.example userbot/.env
 # edit userbot/.env  →  IQ_EMAIL / IQ_PASSWORD
 ```
 
-`curl_cffi` is required so the login + websocket impersonate a real **Firefox**
-browser.  Without it Cloudflare times the handshake out after ~20s
-(`could not connect to any websocket endpoint`).
+Login is HTTPS-first (SSID cookie on the websocket handshake), matching the
+standalone snippet that works on Termux.  `curl_cffi` is **optional** — it
+impersonates Firefox's TLS fingerprint when Cloudflare is strict.  On
+Python 3.13+ / Termux an old `websocket-client` used to crash with
+`'Thread' object has no attribute 'isAlive'`; the bot now avoids that path.
+
+```bash
+pip install -U 'websocket-client>=1.6' requests
+pip install 'curl_cffi>=0.7'   # optional
+```
 
 ```bash
 python livetest.py              # PRACTICE smoke test + $1 trades

@@ -19,9 +19,23 @@ python3 -m venv .venv
 ```
 
 IQ Option sits behind Cloudflare.  A stock Python TLS fingerprint is silently
-dropped (the websocket handshake just hangs until `connect_timeout`).  The
-client impersonates **Firefox 147** via `curl_cffi` and logs in over HTTPS
-*before* opening `wss://…/echo/websocket`, carrying the same cookies.
+dropped on some networks (the websocket handshake just hangs until
+`connect_timeout`).  The client logs in over HTTPS **first** (same flow as the
+known-good snippet: `POST /api/v2/login` → SSID), then opens
+`wss://…/echo/websocket` with `Cookie: ssid=…`, `Origin` and a real browser
+UA, then sends the `ssid` frame.
+
+`curl_cffi` is optional: when it imports cleanly the client impersonates
+**Firefox** (TLS/JA3).  On Termux / Python 3.14 a broken wheel or an old
+`websocket-client` used to crash with `'Thread' object has no attribute
+'isAlive'` — that alias was removed in Python 3.13.  The bot now patches it
+and uses a ping-free recv loop, so stock `requests` + `websocket-client`
+works the same way the standalone example does.
+
+```bash
+pip install -U 'websocket-client>=1.6' requests
+pip install 'curl_cffi>=0.7'   # optional, helps on strict Cloudflare
+```
 
 Credentials কখনো কোডে hardcode হয় না — environment বা JSON config থেকে আসে:
 
