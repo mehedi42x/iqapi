@@ -26,7 +26,17 @@ class AccountType(str, Enum):
 
     @classmethod
     def from_type_id(cls, type_id: Any) -> "AccountType":
+        """Normalize both legacy numeric and newer textual balance types."""
         mapping = {1: cls.REAL, 4: cls.PRACTICE, 2: cls.TOURNAMENT}
+        if isinstance(type_id, str):
+            text = type_id.strip().upper().replace("-", "_")
+            aliases = {
+                "REAL": cls.REAL, "LIVE": cls.REAL,
+                "PRACTICE": cls.PRACTICE, "DEMO": cls.PRACTICE,
+                "TRAINING": cls.PRACTICE, "TOURNAMENT": cls.TOURNAMENT,
+            }
+            if text in aliases:
+                return aliases[text]
         try:
             return mapping.get(int(type_id), cls.UNKNOWN)
         except (TypeError, ValueError):
