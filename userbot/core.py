@@ -238,6 +238,15 @@ class EnvConfig:
     max_fetch_retries: int = 4
     heartbeat_seconds: float = 60.0
 
+    # connection endpoints (empty == use the library's live defaults)
+    ws_host: str = ""
+    ws_hosts: str = ""
+    ws_path: str = ""
+    auth_host: str = ""
+    origin: str = ""
+    user_agent: str = ""
+    enable_ssl: bool = True
+
     source: Path = field(default_factory=lambda: ENV_PATH)
 
     # ------------------------------------------------------------------
@@ -305,6 +314,13 @@ class EnvConfig:
             reconnect_delay=as_float(get("RECONNECT_DELAY", default="3"), 3.0),
             max_fetch_retries=max(1, as_int(get("MAX_FETCH_RETRIES", default="4"), 4)),
             heartbeat_seconds=as_float(get("HEARTBEAT_SECONDS", default="60"), 60.0),
+            ws_host=get("IQ_HOST", "IQ_OPTION_HOST", "HOST").strip(),
+            ws_hosts=get("IQ_WS_HOSTS", "WS_HOSTS").strip(),
+            ws_path=get("IQ_WS_PATH", "WS_PATH").strip(),
+            auth_host=get("IQ_AUTH_HOST", "AUTH_HOST").strip(),
+            origin=get("IQ_ORIGIN", "ORIGIN").strip(),
+            user_agent=get("IQ_USER_AGENT", "USER_AGENT").strip(),
+            enable_ssl=as_bool(get("IQ_SSL", "SSL"), True),
             source=path,
         )
         return cfg
@@ -569,6 +585,23 @@ class UserBotCore:
         )
         iq_cfg.connection.request_timeout = self.cfg.request_timeout
         iq_cfg.connection.connect_timeout = min(20.0, self.cfg.request_timeout)
+
+        # Allow overriding the connection endpoints from .env (empty == defaults).
+        conn = iq_cfg.connection
+        if self.cfg.ws_host:
+            conn.host = self.cfg.ws_host
+        if self.cfg.ws_hosts:
+            conn.websocket_hosts = tuple(
+                h.strip() for h in self.cfg.ws_hosts.replace(",", " ").split() if h.strip())
+        if self.cfg.ws_path:
+            conn.websocket_path = self.cfg.ws_path
+        if self.cfg.auth_host:
+            conn.auth_host = self.cfg.auth_host
+        if self.cfg.origin:
+            conn.origin = self.cfg.origin
+        if self.cfg.user_agent:
+            conn.user_agent = self.cfg.user_agent
+        conn.enable_ssl = self.cfg.enable_ssl
 
         self.client = IQOptionClient(iq_cfg)
         self.client.connect()

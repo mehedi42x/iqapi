@@ -19,6 +19,18 @@ from typing import Any, Dict, Optional
 from ..exceptions import ConfigurationError
 
 DEFAULT_HOST = "iqoption.com"
+# IQ Option serves the same websocket/API off several hostnames.  The client
+# tries them in order and sticks with the first one that answers, so a single
+# blocked/geo-routed hostname no longer wedges the whole bot.  ``iqbroker.com``
+# is the sister brand that shares the exact same platform + protocol.
+DEFAULT_WS_HOSTS = ("iqoption.com", "iqbroker.com")
+# A real browser UA.  IQ Option sits behind Cloudflare which silently drops
+# handshakes that advertise an obviously non-browser client (the old
+# ``iq-option-api/1.0 (+python)`` string is a reliable way to get a 20s timeout).
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 PRACTICE = "PRACTICE"
 REAL = "REAL"
 
@@ -50,6 +62,21 @@ def _env_bool(*names: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_hosts(*names: str, default: tuple) -> tuple:
+    """Parse a comma/space separated hostname list from the environment."""
+    raw = _env(*names)
+    if raw is None:
+        return default
+    hosts = tuple(h.strip() for h in raw.replace(",", " ").split() if h.strip())
+    return hosts or default
+
+
+def _env_tuple(raw: Optional[str]) -> tuple:
+    if not raw:
+        return ()
+    return tuple(v.strip() for v in raw.replace(",", " ").split() if v.strip())
 
 
 @dataclass
@@ -86,6 +113,11 @@ class ReconnectPolicy:
 @dataclass
 class ConnectionConfig:
     host: str = DEFAULT_HOST
+    # Auth lives on its own subdomain (``auth.iqoption.com``).  ``None``
+    # derives it from ``host`` so ``iqbroker.com`` -> ``auth.iqbroker.com``.
+    auth_host: Optional[str] = None
+    # Ordered fallback hostnames for the websocket (and HTTP) endpoints.
+    websocket_hosts: tuple = DEFAULT_WS_HOSTS
     websocket_path: str = "/echo/websocket"
     api_path: str = "/api"
     request_timeout: float = 30.0
@@ -96,12 +128,38 @@ class ConnectionConfig:
     time_sync_tolerance: float = 5.0
     enable_ssl: bool = True
     proxy: Optional[str] = None
-    user_agent: str = "iq-option-api/1.0 (+python)"
+    user_agent: str = DEFAULT_USER_AGENT
+    # Explicit ``Origin`` header for the handshake.  ``None`` derives it from
+    # the host (``https://<host>``), which is what the browser client sends.
+    origin: Optional[str] = None
+    # Optional ``Sec-WebSocket-Protocol`` subprotocols offered in the handshake.
+    subprotocols: tuple = ()
+
+    # ------------------------------------------------------------------
+    def websocket_url_for(self, host: str) -> str:
+        scheme = "wss" if self.enable_ssl else "ws"
+        return f"{scheme}://{host}{self.websocket_path}"
 
     @property
     def websocket_url(self) -> str:
-        scheme = "wss" if self.enable_ssl else "ws"
-        return f"{scheme}://{self.host}{self.websocket_path}"
+        """Primary websocket URL (first host in the fallback list)."""
+        return self.websocket_url_for(self.host)
+
+    @property
+    def websocket_urls(self) -> list:
+        """Every candidate websocket URL, primary first, deduplicated."""
+        hosts: list = []
+        for host in (self.host, *self.websocket_hosts):
+            if host and host not in hosts:
+                hosts.append(host)
+        return [self.websocket_url_for(h) for h in hosts]
+
+    @property
+    def origin_header(self) -> str:
+        if self.origin:
+            return self.origin
+        scheme = "https" if self.enable_ssl else "http"
+        return f"{scheme}://{self.host}"
 
     @property
     def http_base(self) -> str:
@@ -109,8 +167,18 @@ class ConnectionConfig:
         return f"{scheme}://{self.host}"
 
     @property
+    def resolved_auth_host(self) -> str:
+        if self.auth_host:
+            return self.auth_host
+        return f"auth.{self.host}"
+
+    @property
     def auth_url(self) -> str:
-        return f"{self.http_base}/v2/login"
+        # Canonical endpoint (matches the live web client + iqoptionapi):
+        #   POST https://auth.iqoption.com/api/v2/login
+        #       {"identifier": email, "password": password}
+        scheme = "https" if self.enable_ssl else "http"
+        return f"{scheme}://{self.resolved_auth_host}{self.api_path}/v2/login"
 
 
 @dataclass
@@ -191,9 +259,16 @@ class IQConfig:
             ),
             connection=ConnectionConfig(
                 host=_env(f"{p}HOST", default=DEFAULT_HOST) or DEFAULT_HOST,
+                auth_host=_env(f"{p}AUTH_HOST"),
+                websocket_hosts=_env_hosts(f"{p}WS_HOSTS", default=DEFAULT_WS_HOSTS),
+                websocket_path=_env(f"{p}WS_PATH", default="/echo/websocket") or "/echo/websocket",
                 request_timeout=_env_float(f"{p}REQUEST_TIMEOUT", default=30.0),
                 connect_timeout=_env_float(f"{p}CONNECT_TIMEOUT", default=20.0),
+                enable_ssl=_env_bool(f"{p}SSL", default=True),
                 proxy=_env(f"{p}PROXY"),
+                user_agent=_env(f"{p}USER_AGENT", default=DEFAULT_USER_AGENT) or DEFAULT_USER_AGENT,
+                origin=_env(f"{p}ORIGIN"),
+                subprotocols=_env_tuple(_env(f"{p}WS_PROTOCOL")),
             ),
             limits=TradingLimits(
                 min_amount=_env_float(f"{p}MIN_AMOUNT", default=1.0),

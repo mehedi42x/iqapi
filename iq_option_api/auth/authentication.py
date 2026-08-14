@@ -2,7 +2,8 @@
 
 Flow
 ----
-1. ``login()`` -> HTTPS ``POST /v2/login`` -> SSID (the ``ssid`` cookie).
+1. ``login()`` -> HTTPS ``POST https://auth.iqoption.com/api/v2/login``
+   (``{"identifier": email, "password": password}``) -> SSID (the ``ssid`` cookie).
 2. The SSID is sent over the websocket as an ``ssid`` frame; the server answers
    with ``profile`` / ``authenticated``.
 3. The SSID is persisted so the next run can *restore* the session instead of
