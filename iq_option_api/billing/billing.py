@@ -1,7 +1,7 @@
 """Billing / balance information.
 
 **Important separation of concerns.**  This module exposes the raw billing
-balances returned by ``internal-billing.get-balances``.  They are *not* mixed
+balances returned by ``get-balances``.  They are *not* mixed
 into the trading account balance: :class:`~iq_option_api.account.AccountManager`
 remains the only source of truth for the account used to place orders.
 Tournament, promo and internal balances are reported here for information
@@ -41,16 +41,16 @@ class BillingManager:
     # ==================================================================
     def get_balances(self, *, refresh: bool = True, max_age: float = 5.0,
                      timeout: Optional[float] = None) -> List[Balance]:
-        """``internal-billing.get-balances`` - every balance, unfiltered."""
+        """``get-balances`` - every balance, unfiltered."""
         if not refresh and self._raw and time.time() - self._fetched_at < max_age:
             return [Balance.from_payload(item) for item in self._raw]
 
-        payload = self.ws.call(MS_GET_BALANCES, {}, version="1.0", timeout=timeout)
+        payload = self.ws.call(MS_GET_BALANCES, "", version="1.0", timeout=timeout)
         items = payload if isinstance(payload, list) else (
             payload.get("balances") or payload.get("items") or []
             if isinstance(payload, dict) else [])
         if not isinstance(items, list):
-            raise BalanceError("unexpected internal-billing.get-balances payload",
+            raise BalanceError("unexpected get-balances payload",
                                details={"payload": payload})
         self._raw = [i for i in items if isinstance(i, dict)]
         self._fetched_at = time.time()

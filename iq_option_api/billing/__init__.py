@@ -1,4 +1,4 @@
-"""Billing layer - raw ``internal-billing.get-balances`` data.
+"""Billing layer - raw ``get-balances`` data.
 
 Deliberately separate from the trading account layer: billing knows about
 *every* balance the user owns (real, practice, tournament, promo, internal),

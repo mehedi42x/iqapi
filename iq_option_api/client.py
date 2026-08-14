@@ -220,6 +220,12 @@ class IQOptionClient:
     def session_status(self) -> Dict[str, Any]:
         return self.auth.state()
 
+    def get_profile(self, *, refresh: bool = False) -> Dict[str, Any]:
+        """User profile - cached from the auth handshake, ``get-profile`` on refresh."""
+        if refresh or not self.auth.profile:
+            return self.auth.fetch_profile()
+        return self.auth.profile
+
     def ensure_authenticated(self) -> bool:
         return self.auth.ensure_authenticated()
 
@@ -320,6 +326,16 @@ class IQOptionClient:
 
     def subscribe_candles(self, asset: "str | int", size: int = 60, callback=None):
         return self.market.subscribe_candles(asset, size, callback)
+
+    def get_instruments(self, instrument_type: str = "binary") -> Dict[str, Any]:
+        return self.market.get_instruments(instrument_type)
+
+    def top_assets(self, instrument_type: str = "binary") -> Dict[str, Any]:
+        return self.market.top_assets(instrument_type)
+
+    def subscribe_traders_mood(self, asset: "str | int",
+                               instrument: str = "binary", callback=None):
+        return self.market.subscribe_traders_mood(asset, instrument, callback)
 
     # ==================================================================
     # 5. Portfolio / positions / history

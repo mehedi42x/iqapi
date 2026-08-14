@@ -8,6 +8,7 @@ import time
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional
 
+from ..connection.protocol import EVENT_CANDLE_GENERATED, MS_GET_CANDLES
 from ..connection.websocket import WebSocketClient
 from ..exceptions import MarketError, ProtocolError
 from ..models import Candle
@@ -19,7 +20,7 @@ VALID_SIZES = (1, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800,
 class CandleManager:
     """``get-candles`` for history, ``candle-generated`` for realtime."""
 
-    EVENT_CANDLE = "candle-generated"
+    EVENT_CANDLE = EVENT_CANDLE_GENERATED
 
     def __init__(self, client: WebSocketClient, *, buffer_size: int = 1000,
                  logger: Optional[logging.Logger] = None) -> None:
@@ -46,7 +47,7 @@ class CandleManager:
             "to": end_time,
             "count": int(count),
         }
-        payload = self.ws.call("get-candles", body, version="2.0", timeout=timeout)
+        payload = self.ws.call(MS_GET_CANDLES, body, version="2.0", timeout=timeout)
         items = payload.get("candles") if isinstance(payload, dict) else payload
         if not isinstance(items, list):
             raise ProtocolError("unexpected get-candles payload", details=payload)

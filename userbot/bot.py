@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Live trader.
-
-Reads ``userbot/.env``, loads the chosen strategy module, and lets
-``core.py`` do every API call / risk check / order.  This file is the
-operator console: banner, instructions, the loop, and a clean shutdown.
+"""Live trader console.
 
     python bot.py
     python bot.py --dry-run
@@ -14,6 +10,7 @@ operator console: banner, instructions, the loop, and a clean shutdown.
 from __future__ import annotations
 
 import argparse
+import os
 import signal as os_signal
 import sys
 import time
@@ -42,146 +39,109 @@ except ImportError:  # python -m userbot.bot from the repo root
         setup_logging,
     )
 
-
-BANNER = r"""
-╔══════════════════════════════════════════════════════════════════╗
-║                  IQ OPTION  USERBOT                              ║
-║          strategies generate signals · core executes             ║
-╚══════════════════════════════════════════════════════════════════╝
-"""
-
-INSTRUCTIONS = """
-  Configure     edit  userbot/.env
-  Live trade    python bot.py
-  Paper / dry   python bot.py --dry-run          (or DRY_RUN=true)
-  Backtest      python backtest.py
-  Custom strat  drop a .py in userbot/strategies/  (see README)
-  Stop          Ctrl+C   — the engine never wedges, it always unwinds
-
-  .env knobs you will actually touch
-    IQ_EMAIL / IQ_PASSWORD     login
-    IQ_ACCOUNT_MODE            PRACTICE | REAL   (+ IQ_ALLOW_REAL=true)
-    ASSET                      EURUSD  XAUUSD  EURUSD-OTC  ...
-    TIMEFRAME                  1m  5m  15m
-    TRADE_TYPE                 binary | digital | blitz
-    DURATION                   minutes (binary/digital) / seconds (blitz)
-    STRATEGY                   auto | binary1 | digital_ai | gold_impulse | path.py
-    AMOUNT / MM_MODE           fixed | percent | martingale
-    MIN_CONFIDENCE / MIN_PAYOUT
-    MAX_DAILY_LOSS / MAX_TRADES / MAX_CONSECUTIVE_LOSSES
-"""
+W = 40  # panel width — fits phone terminals
 
 
-def _paint(text: str, code: str) -> str:
-    if not sys.stdout.isatty():
-        return text
-    return f"\033[{code}m{text}\033[0m"
+def _tty() -> bool:
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
 
-def green(t: str) -> str:
-    return _paint(t, "32")
+def _c(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _tty() else text
 
 
-def red(t: str) -> str:
-    return _paint(t, "31")
+def green(t: str) -> str: return _c(t, "38;5;42")
+def red(t: str) -> str: return _c(t, "38;5;203")
+def yellow(t: str) -> str: return _c(t, "38;5;220")
+def cyan(t: str) -> str: return _c(t, "38;5;51")
+def dim(t: str) -> str: return _c(t, "2")
+def bold(t: str) -> str: return _c(t, "1")
 
 
-def yel(t: str) -> str:
-    return _paint(t, "33")
+def rule(char: str = "─") -> str:
+    return dim(char * W)
 
 
-def cyan(t: str) -> str:
-    return _paint(t, "36")
+def header(title: str) -> None:
+    print()
+    print(cyan(bold(f" {title}")))
+    print(rule())
 
 
-def bold(t: str) -> str:
-    return _paint(t, "1")
+def row(key: str, value: str) -> None:
+    print(f" {dim(key.ljust(12))} {value}")
 
 
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        prog="bot.py",
-        description="IQ Option userbot — modular strategies, core-executed.",
-    )
+    p = argparse.ArgumentParser(prog="bot.py", description="IQ Option userbot")
     p.add_argument("--env", default=str(ENV_PATH), help="path to .env")
-    p.add_argument("--strategy", help="override STRATEGY from .env")
-    p.add_argument("--asset", help="override ASSET from .env")
+    p.add_argument("--strategy", help="override STRATEGY")
+    p.add_argument("--asset", help="override ASSET")
     p.add_argument("--amount", type=float, help="override AMOUNT")
     p.add_argument("--dry-run", action="store_true", help="signals only, no orders")
-    p.add_argument("--list", action="store_true", dest="list_only",
-                   help="print installed strategies and exit")
-    p.add_argument("--once", action="store_true", help="run a single cycle and exit")
+    p.add_argument("--list", action="store_true", dest="list_only", help="list strategies")
+    p.add_argument("--once", action="store_true", help="single cycle")
     return p.parse_args(argv)
 
 
 def print_catalog() -> None:
-    print(bold("Installed strategy modules"))
-    print(f"{'name':<18} {'tf':<6} {'type':<10} description")
-    print("-" * 78)
-    for row in list_strategies():
-        print(f"{row['name']:<18} {format_tf(int(row['timeframe'])):<6} "
-              f"{str(row['instrument']):<10} {row['description']}")
-
-
-def print_banner(cfg: EnvConfig) -> None:
-    print(cyan(BANNER))
-    print(INSTRUCTIONS)
-    s = cfg.summary()
-    rows = [
-        ("account", f"{s['account']}" + ("  [DRY RUN]" if s["dry_run"] else "")),
-        ("asset", s["asset"]),
-        ("timeframe", s["timeframe"]),
-        ("trade type", f"{s['trade_type']}" + ("  turbo" if s["turbo"] else "")),
-        ("expiry", str(s["duration"])),
-        ("strategy", s["strategy"]),
-        ("amount / mm", f"{s['amount']}   ({s['mm_mode']})"),
-        ("min confidence", f"{s['min_confidence']:.2f}"),
-        ("min payout", f"{s['min_payout']:.0f}%"),
-        ("env file", str(cfg.source)),
-    ]
-    print(bold("  Session"))
-    for key, value in rows:
-        print(f"    {key:<16} {value}")
+    header("STRATEGIES")
+    for item in list_strategies():
+        tf = format_tf(int(item["timeframe"]))
+        print(f" {bold(item['name'].ljust(15))} {dim(tf.ljust(4))} {dim(str(item['instrument']))}")
+        print(f"   {dim(item['description'])}")
     print()
 
 
-def _describe_cycle(cycle: dict) -> str:
+def print_banner(cfg: EnvConfig) -> None:
+    s = cfg.summary()
+    mode = s["account"] + ("  DRY" if s["dry_run"] else "")
+    mode = yellow(mode) if s["dry_run"] or s["account"] != "REAL" else red(mode)
+    header("IQ USERBOT")
+    row("account", mode)
+    row("asset", bold(s["asset"]))
+    row("timeframe", s["timeframe"])
+    row("type", s["trade_type"] + (" turbo" if s["turbo"] else ""))
+    row("expiry", str(s["duration"]))
+    row("strategy", s["strategy"])
+    row("stake", f"{s['amount']} ({s['mm_mode']})")
+    row("min conf", f"{s['min_confidence']:.2f}")
+    row("min payout", f"{s['min_payout']:.0f}%")
+    print(rule())
+
+
+def describe_cycle(cycle: dict) -> str:
     signal = cycle.get("signal")
     if cycle.get("skipped"):
         reason = cycle.get("reason") or (signal.reason if signal else "")
         if signal and signal.tradable:
-            return yel(f"SKIP  {signal.action.upper()} {signal.confidence:.2f}  {reason}")
-        return f"hold  {reason}"
+            return yellow(f"SKIP {signal.action.upper()} {signal.confidence:.2f}") + f" {dim(reason)}"
+        return dim(f"hold  {reason}")
     if cycle.get("dry_run"):
-        return cyan(
-            f"DRY   {signal.action.upper()} {cycle.get('asset')}  "
-            f"${cycle.get('amount')}  conf={signal.confidence:.2f}  {signal.reason}"
-        )
+        return cyan(f"DRY  {signal.action.upper()} ${cycle.get('amount')} "
+                    f"{signal.confidence:.2f}")
     settlement = cycle.get("settlement") or {}
     tag = settlement.get("result", "?")
     pnl = settlement.get("pnl", 0.0)
-    colour = green if tag == "win" else red if tag == "loss" else yel
-    return colour(
-        f"{tag.upper():<5} {signal.action.upper()} {cycle.get('asset')}  "
-        f"${cycle.get('amount')}  pnl={pnl:+.2f}  {signal.reason}"
-    )
+    paint = green if tag == "win" else red if tag == "loss" else yellow
+    return paint(f"{tag.upper():<4} {signal.action.upper()} ${cycle.get('amount')} {pnl:+.2f}")
 
 
-def _print_summary(core: UserBotCore) -> None:
+def print_summary(core: UserBotCore) -> None:
     snap = core.risk.snapshot()
     cur = core.currency()
-    print()
-    print(bold("  Session summary"))
-    print(f"    trades      {snap['trades']}   "
-          f"(W {snap['wins']} / L {snap['losses']} / = {snap['equals']})")
-    print(f"    win rate    {snap['win_rate']:.1f}%")
-    print(f"    pnl         {format_money(snap['pnl'], cur)}")
+    pnl = snap["pnl"]
+    header("SESSION")
+    row("trades", f"{snap['trades']}  W{snap['wins']} L{snap['losses']} ={snap['equals']}")
+    row("win rate", f"{snap['win_rate']:.1f}%")
+    row("pnl", (green if pnl >= 0 else red)(format_money(pnl, cur)))
     if snap["stop_reason"]:
-        print(f"    stopped     {snap['stop_reason']}")
+        row("stopped", yellow(snap["stop_reason"]))
     try:
-        print(f"    balance     {format_money(core.balance(), cur)}")
+        row("balance", format_money(core.balance(), cur))
     except Exception:
         pass
+    print(rule())
     print()
 
 
@@ -207,31 +167,29 @@ def main(argv: Optional[list] = None) -> int:
     try:
         cfg.validate_credentials()
     except Exception as exc:
-        print(red(f"  config: {exc}"))
-        print(f"  edit {cfg.source} and run again.\n")
+        print(red(f" ✗ {exc}"))
+        print(dim(f"   edit {cfg.source}"))
+        print()
         return 2
 
     core = UserBotCore(cfg, logger=log)
 
     def _shutdown(signum, _frame):
-        log.info("signal %s — stopping", signum)
         core.stop()
 
     os_signal.signal(os_signal.SIGINT, _shutdown)
     os_signal.signal(os_signal.SIGTERM, _shutdown)
 
     try:
-        print(yel("  connecting..."))
+        print(dim(" connecting..."))
         core.connect()
         core.load_strategy()
-        print(green(
-            f"  online  {core.account_type()}  "
-            f"{format_money(core.balance(), core.currency())}  "
-            f"strategy={core.strategy.name}"
-        ))
-        print()
+        print(green(f" ● {core.account_type()}  "
+                    f"{format_money(core.balance(), core.currency())}  "
+                    f"{core.strategy.name}"))
+        print(rule())
     except Exception as exc:
-        print(red(f"  connect failed: {exc}"))
+        print(red(f" ✗ connect: {exc}"))
         core.disconnect()
         return 1
 
@@ -243,20 +201,19 @@ def main(argv: Optional[list] = None) -> int:
             except Interrupted:
                 break
             except Exception as exc:
-                log.exception("cycle error (will keep going): %s", exc)
-                print(red(f"  cycle error: {exc}"))
+                log.exception("cycle error: %s", exc)
+                print(red(f" ✗ {exc}"))
                 try:
                     core.interruptible_sleep(core.cfg.reconnect_delay)
                 except Interrupted:
                     break
                 continue
 
-            line = _describe_cycle(cycle)
-            stamp = time.strftime("%H:%M:%S")
-            print(f"  {stamp}  {line}")
+            stamp = dim(time.strftime("%H:%M"))
+            print(f" {stamp} {describe_cycle(cycle)}")
 
             if cycle.get("stop"):
-                print(yel(f"  risk halt: {cycle.get('reason')}"))
+                print(yellow(f" ■ {cycle.get('reason')}"))
                 break
             if args.once:
                 break
@@ -264,12 +221,11 @@ def main(argv: Optional[list] = None) -> int:
         core.stop()
     except Exception as exc:
         log.exception("fatal: %s", exc)
-        print(red(f"  fatal: {exc}"))
+        print(red(f" ✗ fatal: {exc}"))
         exit_code = 1
     finally:
-        _print_summary(core)
+        print_summary(core)
         core.disconnect()
-        print("  disconnected.")
     return exit_code
 
 

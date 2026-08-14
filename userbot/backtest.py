@@ -213,15 +213,14 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
 
 def ask_range() -> str:
     print()
-    print(bold("  History range"))
+    print(bold(" range"))
     keys = list(RANGES)
     for i, key in enumerate(keys, 1):
-        label, seconds = RANGES[key]
-        print(f"    {i})  {key:<4}  {label}")
-    print("    (or type 1d / 1w / 1m / 6m / 1y and press Enter)")
+        label, _ = RANGES[key]
+        print(f"  {i}) {key:<3} {label}")
     while True:
         try:
-            raw = input("  range > ").strip().lower()
+            raw = input(" > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             raise SystemExit(0)
@@ -231,7 +230,7 @@ def ask_range() -> str:
             return raw
         if raw.isdigit() and 1 <= int(raw) <= len(keys):
             return keys[int(raw) - 1]
-        print(yel("  please pick 1d, 1w, 1m, 6m or 1y"))
+        print(yel(" pick 1d / 1w / 1m / 6m / 1y"))
 
 
 def duration_bars(cfg: EnvConfig) -> int:
@@ -328,13 +327,13 @@ def simulate(core: UserBotCore, candles: List[Any], *,
             done = end - lookback
             pct = 100.0 * done / total
             sys.stdout.write(
-                f"\r  simulating  {pct:5.1f}%   trades={len(report.fills)}   "
-                f"pnl={report.pnl:+.2f}   wr={report.win_rate:5.1f}%   "
+                f"\r {pct:5.1f}%  n={len(report.fills)}  "
+                f"pnl={report.pnl:+.2f}  wr={report.win_rate:.1f}%  "
             )
             sys.stdout.flush()
 
     report.elapsed = time.time() - started
-    sys.stdout.write("\r" + " " * 78 + "\r")
+    sys.stdout.write("\r" + " " * 60 + "\r")
     sys.stdout.flush()
     return report
 
@@ -342,33 +341,27 @@ def simulate(core: UserBotCore, candles: List[Any], *,
 def print_report(report: Report) -> None:
     wr_colour = green if report.win_rate >= 55 else yel if report.win_rate >= 50 else red
     pnl_colour = green if report.pnl > 0 else red if report.pnl < 0 else yel
+    pf = "inf" if report.profit_factor == float("inf") else f"{report.profit_factor:.2f}"
     print()
-    print(bold("  Backtest report"))
-    print(f"    strategy     {report.strategy}")
-    print(f"    asset        {report.asset}   {report.trade_type}   "
-          f"{format_tf(report.timeframe)}   expiry {report.duration_bars} bar(s)")
-    print(f"    window       {RANGES[report.range_key][0]}   "
-          f"{report.candles} candles")
-    print(f"    payout       {report.payout:.1f}%")
-    print(f"    trades       {len(report.fills)}    "
-          f"W {report.wins} / L {report.losses} / = {report.equals}    "
-          f"skipped {report.skipped}")
-    print(f"    win rate     {wr_colour(f'{report.win_rate:.2f}%')}")
-    print(f"    pnl          {pnl_colour(format_money(report.pnl))}")
-    pf = "∞" if report.profit_factor == float("inf") else f"{report.profit_factor:.2f}"
-    print(f"    profit fact  {pf}")
-    print(f"    max DD       {report.max_drawdown:.2f}")
-    print(f"    max lose-st  {report.max_consec_loss}")
-    print(f"    elapsed      {report.elapsed:.1f}s")
+    print(bold(" BACKTEST"))
+    print("─" * 40)
+    print(f" strategy   {report.strategy}")
+    print(f" asset      {report.asset}  {report.trade_type}  {format_tf(report.timeframe)}")
+    print(f" window     {RANGES[report.range_key][0]}  {report.candles} candles")
+    print(f" payout     {report.payout:.1f}%")
+    print(f" trades     {len(report.fills)}  W{report.wins} L{report.losses} ={report.equals}")
+    print(f" win rate   {wr_colour(f'{report.win_rate:.2f}%')}")
+    print(f" pnl        {pnl_colour(format_money(report.pnl))}")
+    print(f" pf / dd    {pf} / {report.max_drawdown:.2f}")
+    print(f" elapsed    {report.elapsed:.1f}s")
     if report.fills:
-        print()
-        print(bold("  last 8 fills"))
+        print("─" * 40)
         for fill in report.fills[-8:]:
             when = (datetime.fromtimestamp(fill.time, tz=timezone.utc).strftime("%m-%d %H:%M")
-                    if fill.time else "—")
+                    if fill.time else "-")
             colour = green if fill.result == "win" else red if fill.result == "loss" else yel
-            print(f"    {when}  {colour(fill.result.upper()):<14} "
-                  f"{fill.action.upper():<4}  {fill.pnl:+7.2f}  {fill.reason[:48]}")
+            print(f" {when} {colour(fill.result.upper()[:4]):<13} "
+                  f"{fill.action.upper():<4} {fill.pnl:+.2f}")
     print()
 
 
@@ -410,14 +403,14 @@ def main(argv: Optional[list] = None) -> int:
     cfg.dry_run = True
 
     log = setup_logging(cfg.log_level, name="userbot.backtest")
-    print(cyan("\n  IQ Option userbot — backtest"))
-    print(f"  strategy={cfg.resolved_strategy_name()}  asset={cfg.asset}  "
-          f"tf={format_tf(cfg.timeframe)}  type={cfg.trade_type}")
+    print(cyan("\n BACKTEST"))
+    print("─" * 40)
+    print(f" {cfg.resolved_strategy_name()}  {cfg.asset}  "
+          f"{format_tf(cfg.timeframe)}  {cfg.trade_type}")
 
     range_key = args.range or ask_range()
     label, seconds = RANGES[range_key]
-    print(yel(f"\n  downloading {label} of {format_tf(cfg.timeframe)} candles "
-              f"for {cfg.asset} via core.py ..."))
+    print(yel(f" downloading {label} of candles..."))
 
     core = UserBotCore(cfg, logger=log)
     try:
@@ -438,11 +431,10 @@ def main(argv: Optional[list] = None) -> int:
                                      progress=_progress)
         sys.stdout.write("\r" + " " * 60 + "\r")
         if len(candles) < (core.strategy.min_candles + duration_bars(cfg) + 5):
-            print(red(f"  not enough candles ({len(candles)}) for this window/timeframe"))
+            print(red(f" not enough candles ({len(candles)})"))
             return 1
-        print(green(f"  got {len(candles)} closed candles  "
-                    f"({core.live_asset} {format_tf(cfg.timeframe)})"))
-        print(yel("  walking the tape ..."))
+        print(green(f" {len(candles)} candles  {core.live_asset} {format_tf(cfg.timeframe)}"))
+        print(yel(" simulating..."))
         report = simulate(core, candles,
                           payout=cfg.payout_percent,
                           amount=cfg.amount,

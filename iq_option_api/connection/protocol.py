@@ -30,9 +30,10 @@ from typing import Any, Callable, Dict, Optional
 from ..exceptions import ProtocolError, TimeoutError as IQTimeoutError
 
 # --------------------------------------------------------------------------
-# Microservice names captured from the live protocol
+# Microservice names
 # --------------------------------------------------------------------------
-MS_GET_BALANCES = "internal-billing.get-balances"
+MS_GET_PROFILE = "get-profile"
+MS_GET_BALANCES = "get-balances"
 MS_CHANGE_BALANCE = "internal-billing.change-balance"
 MS_PORTFOLIO_STATS = "portfolio.get-stats"
 MS_PORTFOLIO_POSITIONS = "portfolio.get-positions"
@@ -42,9 +43,9 @@ MS_DIGITAL_UNDERLYING = "digital-option-instruments.get-underlying-list"
 MS_DIGITAL_INSTRUMENTS = "digital-option-instruments.get-instruments"
 MS_DIGITAL_PRICE_EVENT = "digital-option-client-price-generated"
 MS_DIGITAL_PLACE = "digital-options.place-digital-option"
-MS_BINARY_OPEN = "binary-options.open-option"
+MS_BINARY_OPEN = "buyV3"
 MS_BLITZ_OPEN = "blitz-options.open-option"
-MS_MARGINAL_PLACE = "marginal-instruments.place-order"
+MS_MARGINAL_PLACE = "place-order-temp"
 MS_MARGINAL_UNDERLYING = "marginal-instruments.get-underlying-list"
 MS_MARGINAL_INSTRUMENTS = "marginal-instruments.get-instruments"
 MS_MARGINAL_LEVERAGE = "get-leverages"
@@ -52,9 +53,14 @@ MS_CLOSE_POSITION = "portfolio.close-position"
 MS_CHANGE_TPSL = "portfolio.change-tpsl"
 MS_INITIALIZATION_DATA = "get-initialization-data"
 MS_UNDERLYING_LIST = "get-underlying-list"
-MS_INSTRUMENTS = "instruments.get-instruments"
-MS_ACTIVE_LIST = "get-active-list"
-MS_TRADERS_MOOD = "traders-mood.get-mood"
+MS_GET_INSTRUMENTS = "get-instruments"
+MS_GET_CANDLES = "get-candles"
+MS_TOP_ASSETS = "get-top-assets-info"
+MS_HEARTBEAT = "heartbeat"
+
+# Stream events
+EVENT_CANDLE_GENERATED = "candle-generated"
+EVENT_TRADERS_MOOD = "traders-mood-changed"
 
 # Frame names
 FRAME_SEND_MESSAGE = "sendMessage"

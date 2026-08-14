@@ -4,7 +4,7 @@ Golden rule of this module
 --------------------------
 **The active account and its ``user_balance_id`` are always resolved from
 server data.**  Nothing here ever assumes a hardcoded balance id: the account
-list comes from ``internal-billing.get-balances`` and every switch is verified
+list comes from ``get-balances`` and every switch is verified
 by re-reading the balances afterwards.
 """
 

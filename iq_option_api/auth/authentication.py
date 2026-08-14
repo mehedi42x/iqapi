@@ -20,7 +20,7 @@ import time
 from typing import Any, Dict, Optional
 
 from ..config import Credentials, IQConfig
-from ..connection.protocol import FRAME_AUTH
+from ..connection.protocol import FRAME_AUTH, MS_GET_PROFILE
 from ..connection.websocket import WebSocketClient
 from ..exceptions import (
     AuthenticationError,
@@ -239,6 +239,14 @@ class Authenticator:
         self.persist()
         self.log.info("authenticated (user_id=%s)", self.session.user_id)
         return True
+
+    def fetch_profile(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """``get-profile`` over the websocket. Updates the cached profile."""
+        payload = self.ws.call(MS_GET_PROFILE, "", version="1.0",
+                               timeout=timeout or self.config.connection.request_timeout)
+        if isinstance(payload, dict):
+            self._profile = payload
+        return self.profile
 
     # ==================================================================
     # High level helpers

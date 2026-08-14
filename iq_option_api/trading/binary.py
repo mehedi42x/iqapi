@@ -159,17 +159,14 @@ class BinaryOptions:
         self.orders.validate(order, balance=self._balance())
 
         body = {
-            "user_balance_id": balance_id,
+            "price": float(amount),
             "active_id": instrument.asset_id,
-            "option_type_id": 3 if turbo else 1,   # 1 binary, 3 turbo
             "direction": direction.value,
             "expired": int(instrument.expiration.timestamp),
-            "refund_value": 0,
-            "price": float(amount),
-            "value": 0,
-            "profit_percent": int(instrument.payout or 0),
+            "type": "turbo" if turbo else "binary",
+            "user_balance_id": balance_id,
         }
-        return self.orders.submit(order, MS_BINARY_OPEN, body, version="2.0", timeout=timeout)
+        return self.orders.submit(order, MS_BINARY_OPEN, body, version="3.0", timeout=timeout)
 
     def call(self, asset: "str | int", amount: float, *, duration: int = 1,
              **kwargs: Any) -> Order:

@@ -5,7 +5,7 @@ Layers
 ``connection``  websocket transport, protocol frames, subscriptions
 ``auth``        login, SSID lifecycle, session validation
 ``account``     accounts, active ``user_balance_id``, balances
-``billing``     raw ``internal-billing.get-balances`` (kept apart from trading)
+``billing``     raw ``get-balances`` (kept apart from trading)
 ``market``      assets, market status, prices, candles, instruments
 ``trading``     binary, digital, blitz, forex, cfd, stocks, crypto,
                 commodities, etf, indices + order/position management
