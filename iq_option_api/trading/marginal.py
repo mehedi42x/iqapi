@@ -187,19 +187,16 @@ class MarginalTrading:
         self.orders.validate(order, balance=self._balance())
 
         body: Dict[str, Any] = {
-            "user_balance_id": balance_id,
-            "instrument_type": self.market.instruments.wire_type(self.INSTRUMENT_TYPE),
+            "instrument_type": self._order_wire_type(),
             "instrument_id": instrument.instrument_id or str(instrument.asset_id),
-            "instrument_active_id": instrument.asset_id,
             "side": "buy" if direction.is_long else "sell",
-            "type": order_type.value,
-            "amount": str(float(amount)),
+            "amount": float(amount),
             "leverage": int(leverage) if leverage else 1,
+            "type": order_type.value,
+            "limit_price": float(limit_price) if limit_price is not None else 0,
+            "stop_price": float(stop_price) if stop_price is not None else 0,
+            "user_balance_id": balance_id,
         }
-        if order_type is OrderType.LIMIT and limit_price is not None:
-            body["limit_price"] = float(limit_price)
-        if order_type is OrderType.STOP and stop_price is not None:
-            body["stop_price"] = float(stop_price)
         if stop_loss is not None:
             body["stop_lose_kind"] = stop_loss_kind
             body["stop_lose_value"] = float(stop_loss)
@@ -208,7 +205,7 @@ class MarginalTrading:
             body["take_profit_value"] = float(take_profit)
 
         return self.orders.submit(order, MS_MARGINAL_PLACE, body,
-                                  version="1.0", timeout=timeout)
+                                  version="4.0", timeout=timeout)
 
     def buy(self, asset: "str | int", amount: float, **kwargs: Any) -> Order:
         return self.open_position(asset, amount, Direction.BUY, **kwargs)
@@ -272,6 +269,17 @@ class MarginalTrading:
                 if o.instrument_type is self.INSTRUMENT_TYPE]
 
     # ==================================================================
+    def _order_wire_type(self) -> str:
+        return {
+            InstrumentType.FOREX: "forex",
+            InstrumentType.CFD: "cfd",
+            InstrumentType.CRYPTO: "crypto",
+            InstrumentType.STOCK: "cfd",
+            InstrumentType.COMMODITY: "cfd",
+            InstrumentType.ETF: "cfd",
+            InstrumentType.INDEX: "cfd",
+        }.get(self.INSTRUMENT_TYPE, "cfd")
+
     def _balance(self) -> Optional[float]:
         try:
             return self.accounts.balance(refresh=False)

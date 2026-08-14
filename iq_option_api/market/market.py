@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from ..connection.protocol import EVENT_TRADERS_MOOD, MS_GET_INSTRUMENTS, MS_TOP_ASSETS
 from ..connection.websocket import WebSocketClient
 from ..exceptions import MarketError
 from ..models import Asset, Candle, InstrumentType, MarketStatus, Price, Tick
@@ -162,6 +163,36 @@ class MarketManager:
             if time.time() - cached.timestamp < 30:
                 return cached.value
         return self.candles.current_price(asset_id)
+
+    # ==================================================================
+    # Instruments / sentiment / top assets
+    # ==================================================================
+    def get_instruments(self, instrument_type: str = "binary",
+                        *, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """``get-instruments`` for a wire instrument type (e.g. ``binary``)."""
+        payload = self.ws.call(MS_GET_INSTRUMENTS, {"type": instrument_type},
+                               version="1.0", timeout=timeout)
+        return payload if isinstance(payload, dict) else {}
+
+    def top_assets(self, instrument_type: str = "binary",
+                   *, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """``get-top-assets-info`` for an instrument type."""
+        payload = self.ws.call(MS_TOP_ASSETS, {"instrument_type": instrument_type},
+                               version="1.2", timeout=timeout)
+        return payload if isinstance(payload, dict) else {}
+
+    def subscribe_traders_mood(self, asset: "str | int",
+                               instrument: str = "binary", callback=None):
+        """Live ``traders-mood-changed`` sentiment updates."""
+        asset_id = self.asset_id(asset)
+        return self.ws.subscribe(
+            EVENT_TRADERS_MOOD,
+            params={"instrument": instrument, "asset_id": asset_id},
+            callback=callback,
+        )
+
+    def unsubscribe_traders_mood(self, subscription) -> bool:
+        return self.ws.unsubscribe(subscription.subscription_id)
 
     # ==================================================================
     def close(self) -> None:

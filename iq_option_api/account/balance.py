@@ -1,6 +1,6 @@
 """Balance management.
 
-Pulls balances from ``internal-billing.get-balances`` and keeps them fresh via
+Pulls balances from ``get-balances`` and keeps them fresh via
 the ``balance-changed`` stream event.
 """
 
@@ -33,9 +33,7 @@ class BalanceManager:
     def refresh(self, *, timeout: Optional[float] = None,
                 types_ids: Optional[List[int]] = None) -> List[Balance]:
         """Fetch balances from the server.  Always the source of truth."""
-        body: Dict[str, Any] = {}
-        if types_ids:
-            body["types_ids"] = types_ids
+        body: Any = {"types_ids": types_ids} if types_ids else ""
         payload = self.ws.call(MS_GET_BALANCES, body, version="1.0", timeout=timeout)
 
         items = payload

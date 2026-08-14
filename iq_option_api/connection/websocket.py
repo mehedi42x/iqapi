@@ -416,11 +416,13 @@ class WebSocketClient:
     def subscribe(self, event_name: str, *,
                   params: Optional[Dict[str, Any]] = None,
                   callback: Optional[Callable[[Any], None]] = None,
-                  version: str = "1.0",
+                  version: Optional[str] = None,
                   send_frame: bool = True):
         """Register a routed subscription and tell the server about it."""
         params = {k: v for k, v in (params or {}).items() if v is not None}
-        msg: Dict[str, Any] = {"name": event_name, "version": version}
+        msg: Dict[str, Any] = {"name": event_name}
+        if version:
+            msg["version"] = version
         if params:
             msg["params"] = {"routingFilters": dict(params)}
         frame = build_message(FRAME_SUBSCRIBE, msg)
@@ -466,9 +468,9 @@ class WebSocketClient:
                 if not self.is_connected:
                     continue
                 try:
-                    self.send(FRAME_HEARTBEAT, {
-                        "userTime": int(time.time() * 1000),
-                        "heartbeatTime": int(self.server_time * 1000),
+                    self.send(FRAME_SEND_MESSAGE, {
+                        "name": FRAME_HEARTBEAT,
+                        "body": {"userTime": int(time.time() * 1000)},
                     })
                 except Exception as exc:  # pragma: no cover
                     self.log.debug("heartbeat failed: %s", exc)
@@ -478,9 +480,9 @@ class WebSocketClient:
 
     def _reply_heartbeat(self, payload: Any) -> None:
         try:
-            self.send(FRAME_HEARTBEAT, {
-                "userTime": int(time.time() * 1000),
-                "heartbeatTime": int(payload) if isinstance(payload, (int, float)) else int(time.time() * 1000),
+            self.send(FRAME_SEND_MESSAGE, {
+                "name": FRAME_HEARTBEAT,
+                "body": {"userTime": int(time.time() * 1000)},
             })
         except Exception:  # pragma: no cover
             pass

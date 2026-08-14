@@ -310,13 +310,13 @@ class DigitalOptions:
         self.orders.validate(order, balance=self._balance())
 
         body = {
-            "amount": str(float(amount)),
-            "instrument_id": instrument.instrument_id,
-            "instrument_index": instrument.index or 0,
-            "asset_id": instrument.asset_id,
             "user_balance_id": balance_id,
+            "instrument_id": instrument.instrument_id,
+            "amount": str(float(amount)),
+            "asset_id": instrument.asset_id,
+            "direction": direction.value,
         }
-        return self.orders.submit(order, MS_DIGITAL_PLACE, body, version="2.0", timeout=timeout)
+        return self.orders.submit(order, MS_DIGITAL_PLACE, body, version="1.0", timeout=timeout)
 
     def call(self, asset: "str | int", amount: float, *, duration: int = 1,
              **kwargs: Any) -> Order:

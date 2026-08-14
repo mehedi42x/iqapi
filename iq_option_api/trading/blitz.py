@@ -95,7 +95,7 @@ class BlitzOptions:
     def get_instrument(self, asset: "str | int", duration: int = 60) -> Instrument:
         option = self.get_option(asset, duration)
         asset_obj = self.get_asset(asset)
-        expiration = Expiration(timestamp=self.market.server_time() + duration,
+        expiration = Expiration(timestamp=self.market.server_time + duration,
                                 period=int(duration))
         return Instrument(
             instrument_id=f"{option.asset_id}:blitz:{duration}",

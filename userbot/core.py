@@ -1101,17 +1101,19 @@ class UserBotCore:
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 
-def setup_logging(level: str = "INFO", *, name: str = "userbot") -> logging.Logger:
+def setup_logging(level: str = "INFO", *, name: str = "userbot",
+                  console_level: str = "WARNING") -> logging.Logger:
+    """Full detail goes to the log file; the terminal stays clean."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger(name)
-    numeric = getattr(logging, str(level).upper(), logging.INFO)
-    logger.setLevel(numeric)
+    logger.setLevel(getattr(logging, str(level).upper(), logging.INFO))
     if logger.handlers:
         return logger
     fmt = logging.Formatter(_LOG_FORMAT)
     stream = logging.StreamHandler()
-    stream.setFormatter(fmt)
+    stream.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    stream.setLevel(getattr(logging, str(console_level).upper(), logging.WARNING))
     logger.addHandler(stream)
     try:
         file_handler = logging.FileHandler(LOG_DIR / "bot.log", encoding="utf-8")
