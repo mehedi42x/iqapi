@@ -11,7 +11,11 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from ..connection.protocol import EVENT_TRADERS_MOOD, MS_GET_INSTRUMENTS, MS_TOP_ASSETS
+from ..connection.protocol import (
+    EVENT_TOP_ASSETS,
+    EVENT_TRADERS_MOOD,
+    MS_GET_INSTRUMENTS,
+)
 from ..connection.websocket import WebSocketClient
 from ..exceptions import MarketError
 from ..models import Asset, Candle, InstrumentType, MarketStatus, Price, Tick
@@ -29,6 +33,9 @@ class MarketManager:
         self.prices = PriceStream(client, logger=self.log)
         self.candles = CandleManager(client, logger=self.log)
         self.instruments = InstrumentRegistry(client, logger=self.log)
+        # top-assets-updated is a push stream; keep the last frame per type
+        self._top_assets_cache: Dict[str, Dict[str, Any]] = {}
+        self._top_assets_subs: Dict[str, Any] = {}
 
     # ==================================================================
     # Time
@@ -167,19 +174,141 @@ class MarketManager:
     # ==================================================================
     # Instruments / sentiment / top assets
     # ==================================================================
+    #: ``get-instruments`` only knows about margin/CFD style markets.  Binary,
+    #: turbo and blitz books live in the initialization data instead.
+    _OPTION_TYPES = {"binary", "turbo", "blitz",
+                     "binary-option", "turbo-option", "blitz-option"}
+
+    @staticmethod
+    def wire_instrument_type(instrument_type: "str | InstrumentType") -> str:
+        """Normalise ``turbo`` / ``InstrumentType.TURBO`` to ``turbo-option``."""
+        if isinstance(instrument_type, InstrumentType):
+            return InstrumentRegistry.wire_type(instrument_type)
+        name = str(instrument_type).strip().lower()
+        if name in ("binary", "turbo", "blitz", "digital"):
+            return f"{name}-option"
+        return name
+
     def get_instruments(self, instrument_type: str = "binary",
                         *, timeout: Optional[float] = None) -> Dict[str, Any]:
-        """``get-instruments`` for a wire instrument type (e.g. ``binary``)."""
-        payload = self.ws.call(MS_GET_INSTRUMENTS, {"type": instrument_type},
-                               version="1.0", timeout=timeout)
+        """Instrument book for an instrument type.
+
+        ``get-instruments`` (v4.0) serves forex / CFD / crypto / digital only -
+        asking it for ``binary`` or ``turbo`` returns an empty book.  Those are
+        published through the initialization data, so we build an equivalent
+        ``{"instruments": [...]}`` payload from there.
+        """
+        name = str(instrument_type).strip().lower()
+        if name in self._OPTION_TYPES:
+            return self._option_instruments(name)
+
+        payload = self.ws.call(MS_GET_INSTRUMENTS, {"type": name},
+                               version="4.0", timeout=timeout)
         return payload if isinstance(payload, dict) else {}
 
-    def top_assets(self, instrument_type: str = "binary",
-                   *, timeout: Optional[float] = None) -> Dict[str, Any]:
-        """``get-top-assets-info`` for an instrument type."""
-        payload = self.ws.call(MS_TOP_ASSETS, {"instrument_type": instrument_type},
-                               version="1.2", timeout=timeout)
-        return payload if isinstance(payload, dict) else {}
+    def _option_instruments(self, name: str) -> Dict[str, Any]:
+        """Binary / turbo / blitz book assembled from the initialization data."""
+        kind = name.replace("-option", "")
+        if kind == "blitz":
+            assets = self.assets.blitz_assets()
+        else:
+            assets = self.assets.binary_assets(turbo=(kind == "turbo"))
+
+        instruments = []
+        for asset in assets:
+            instruments.append({
+                "id": asset.asset_id,
+                "active_id": asset.asset_id,
+                "name": asset.name,
+                "type": f"{kind}-option",
+                "is_open": asset.is_open,
+                "minimal_amount": asset.minimal_amount,
+                "maximal_amount": asset.maximal_amount,
+                "profit_percent": asset.profit_percent,
+            })
+        return {"type": f"{kind}-option", "instruments": instruments}
+
+    def top_assets(self, instrument_type: str = "binary", *,
+                   timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Top assets for an instrument type.
+
+        There is no ``get-top-assets-info`` request/response call - the
+        platform only *pushes* this data on the ``top-assets-updated``
+        subscription, which is why the old blocking call always came back
+        empty.  We subscribe, wait for the first delivery, and cache it.
+        """
+        wire = self.wire_instrument_type(instrument_type)
+        timeout = timeout if timeout is not None else 15.0
+
+        cached = self._top_assets_cache.get(wire)
+        if cached and (time.time() - cached["updated_at"]) < 60.0:
+            return cached["data"]
+
+        self.subscribe_top_assets(wire)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            cached = self._top_assets_cache.get(wire)
+            if cached and cached["data"]:
+                return cached["data"]
+            try:
+                payload = self.ws.wait_for(
+                    EVENT_TOP_ASSETS, timeout=max(1.0, deadline - time.time()),
+                    predicate=lambda p: self._top_assets_type(p) == wire)
+            except Exception:
+                break
+            data = self._store_top_assets(payload)
+            if data:
+                return data
+
+        cached = self._top_assets_cache.get(wire)
+        return cached["data"] if cached else {}
+
+    def subscribe_top_assets(self, instrument_type: "str | InstrumentType",
+                             callback=None):
+        """Subscribe to ``top-assets-updated`` for one instrument type."""
+        wire = self.wire_instrument_type(instrument_type)
+        existing = self._top_assets_subs.get(wire)
+        if existing is not None and callback is None:
+            return existing
+
+        def _handler(payload: Any) -> None:
+            data = self._store_top_assets(payload)
+            if data and callback:
+                callback(data)
+
+        sub = self.ws.subscribe(EVENT_TOP_ASSETS,
+                                params={"instrument_type": wire},
+                                version="1.2", callback=_handler)
+        self._top_assets_subs[wire] = sub
+        return sub
+
+    def unsubscribe_top_assets(self, instrument_type: "str | InstrumentType") -> bool:
+        wire = self.wire_instrument_type(instrument_type)
+        sub = self._top_assets_subs.pop(wire, None)
+        return self.ws.unsubscribe(sub.subscription_id) if sub else False
+
+    @staticmethod
+    def _top_assets_type(payload: Any) -> Optional[str]:
+        if not isinstance(payload, dict):
+            return None
+        msg = payload.get("msg") if isinstance(payload.get("msg"), dict) else payload
+        value = msg.get("instrument_type")
+        return str(value) if value else None
+
+    def _store_top_assets(self, payload: Any) -> Dict[str, Any]:
+        """Cache one ``top-assets-updated`` frame keyed by instrument type."""
+        wire = self._top_assets_type(payload)
+        if not wire or not isinstance(payload, dict):
+            return {}
+        msg = payload.get("msg") if isinstance(payload.get("msg"), dict) else payload
+        data = msg.get("data")
+        if isinstance(data, list):
+            data = {str(entry.get("active_id")): entry
+                    for entry in data if isinstance(entry, dict)}
+        if not isinstance(data, dict) or not data:
+            return {}
+        self._top_assets_cache[wire] = {"data": data, "updated_at": time.time()}
+        return data
 
     def subscribe_traders_mood(self, asset: "str | int",
                                instrument: str = "binary", callback=None):

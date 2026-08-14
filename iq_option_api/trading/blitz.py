@@ -11,7 +11,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from ..account import AccountManager
-from ..connection.protocol import MS_BLITZ_OPEN
+from ..connection.protocol import MS_BLITZ_OPEN, OPTION_TYPE_BLITZ
 from ..connection.websocket import WebSocketClient
 from ..exceptions import AssetError, OrderError
 from ..market import MarketManager
@@ -27,6 +27,7 @@ from ..models import (
     Position,
     TradeResult,
 )
+from .option_events import option_matcher
 from .orders import OrderManager
 from .positions import PositionManager
 
@@ -175,18 +176,23 @@ class BlitzOptions:
         self.orders.validate(order, balance=self._balance())
 
         body: Dict[str, Any] = {
-            "user_balance_id": balance_id,
-            "active_id": instrument.asset_id,
-            "option_type_id": 12,          # blitz
-            "direction": direction.value,
+            "user_balance_id": int(balance_id),
+            "active_id": int(instrument.asset_id),
+            "option_type_id": OPTION_TYPE_BLITZ,
+            "direction": direction.value.lower(),
             "expiration_size": duration,
             "price": float(amount),
             "value": 0,
             "refund_value": 0,
             "profit_percent": int(instrument.payout or 0),
         }
-        return self.orders.submit(order, MS_BLITZ_OPEN, body,
-                                  version="1.0", timeout=timeout)
+        # Blitz shares the binary options lifecycle events, so the same
+        # broadcast fallback applies (see trading/option_events.py).
+        matcher = option_matcher(active_id=body["active_id"],
+                                 direction=body["direction"],
+                                 balance_id=body["user_balance_id"])
+        return self.orders.submit(order, MS_BLITZ_OPEN, body, version="1.0",
+                                  timeout=timeout, matcher=matcher)
 
     def call(self, asset: "str | int", amount: float, duration: int = 60, **kw: Any) -> Order:
         return self.buy(asset, amount, Direction.CALL, duration, **kw)

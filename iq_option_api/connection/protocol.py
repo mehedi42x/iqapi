@@ -41,9 +41,14 @@ MS_PORTFOLIO_POSITION_CHANGED = "portfolio.position-changed"
 MS_PORTFOLIO_HISTORY = "portfolio.get-history-positions"
 MS_DIGITAL_UNDERLYING = "digital-option-instruments.get-underlying-list"
 MS_DIGITAL_INSTRUMENTS = "digital-option-instruments.get-instruments"
-MS_DIGITAL_PRICE_EVENT = "digital-option-client-price-generated"
+MS_DIGITAL_PRICE_EVENT = "instrument-quotes-generated"
+MS_DIGITAL_STRIKE_LIST = "get-strike-list"
 MS_DIGITAL_PLACE = "digital-options.place-digital-option"
-MS_BINARY_OPEN = "buyV3"
+# ``buyV3`` was the pre-2019 channel and the gateway silently drops it: the
+# frame is accepted but no reply is ever correlated back, which surfaced as
+# ``no response for request_id=N within 25s``.  The live channel is the
+# ``binary-options`` microservice below (version 1.0).
+MS_BINARY_OPEN = "binary-options.open-option"
 MS_BLITZ_OPEN = "blitz-options.open-option"
 MS_MARGINAL_PLACE = "place-order-temp"
 MS_MARGINAL_UNDERLYING = "marginal-instruments.get-underlying-list"
@@ -55,12 +60,38 @@ MS_INITIALIZATION_DATA = "get-initialization-data"
 MS_UNDERLYING_LIST = "get-underlying-list"
 MS_GET_INSTRUMENTS = "get-instruments"
 MS_GET_CANDLES = "get-candles"
+# Top assets are *not* a request/response microservice - the platform only
+# publishes them through the ``top-assets-updated`` subscription below.
 MS_TOP_ASSETS = "get-top-assets-info"
 MS_HEARTBEAT = "heartbeat"
 
 # Stream events
 EVENT_CANDLE_GENERATED = "candle-generated"
 EVENT_TRADERS_MOOD = "traders-mood-changed"
+EVENT_TOP_ASSETS = "top-assets-updated"
+EVENT_DIGITAL_QUOTES = "instrument-quotes-generated"
+
+# Binary / turbo / blitz order lifecycle events.  ``binary-options.open-option``
+# answers with an ``option`` frame carrying the echoed ``request_id``; the
+# platform *also* broadcasts these events, which is what we fall back to when
+# the correlated reply is lost.
+EVENT_OPTION = "option"
+EVENT_OPTION_OPENED = "option-opened"
+EVENT_SOCKET_OPTION_OPENED = "socket-option-opened"
+EVENT_OPTION_REJECTED = "option-rejected"
+EVENT_BUY_COMPLETE = "buyComplete"
+OPTION_RESULT_EVENTS = (
+    EVENT_OPTION,
+    EVENT_OPTION_OPENED,
+    EVENT_SOCKET_OPTION_OPENED,
+    EVENT_OPTION_REJECTED,
+    EVENT_BUY_COMPLETE,
+)
+
+# ``option_type_id`` values understood by ``*-options.open-option``.
+OPTION_TYPE_BINARY = 1
+OPTION_TYPE_TURBO = 3
+OPTION_TYPE_BLITZ = 12
 
 # Frame names
 FRAME_SEND_MESSAGE = "sendMessage"
