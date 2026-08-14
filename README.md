@@ -3,6 +3,20 @@
 IQ Option-এর জন্য একটি সম্পূর্ণ **modular trading API module**। প্রতিটি capability আলাদা layer-এ,
 প্রতিটি layer আলাদাভাবে ব্যবহার/টেস্ট করা যায়, আর `IQOptionClient` হলো সবকিছুকে একসাথে বেঁধে দেওয়া facade।
 
+> **বটের জন্য সহজ মুখ:** [`api/`](api/README.md) — flat module সিস্টেম
+> (`auth.py`, `blitz.py`, `binary.py`, `digital.py`, `forex.py`, `data.py`,
+> আর `manager.py` যেটা সব module maintain করে)। API এখানে দালালের মতো —
+> বট যা চাইবে তাই এনে দেবে, বাড়তি কিছু নেই:
+>
+> ```python
+> from api import IQAPI
+> with IQAPI() as iq:
+>     iq.auth.set_account("PRACTICE")
+>     iq.auth.set_symbol("EURUSD-OTC")
+>     iq.binary.set_amount(1)
+>     print(iq.binary.result(iq.binary.call()).result)
+> ```
+>
 > `core.py` / `main.py` এই মডিউলের অংশ নয় — সেগুলো আলাদা diagnostic/application project।
 >
 > লাইভ বট + ব্যাকটেস্ট আলাদা প্যাকেজ: [`userbot/`](userbot/README.md)
