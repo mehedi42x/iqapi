@@ -9,7 +9,7 @@ first boot).  This is a *real* online learner:
 4. After every settled trade ``on_result`` nudges the weights toward
    (win) or away from (loss) the feature vector that produced it.
 
-Weights persist in ``userbot/data/ai_weights.json`` so the module gets
+Weights persist in ``bot/data/ai_weights.json`` so the module gets
 sharper the longer you run it.  Works on any asset; shines on 1-minute
 digital because the feedback loop is fast.
 """
@@ -24,12 +24,23 @@ from typing import Any, Dict, List, Optional, Sequence
 from .base import Strategy, Signal
 from . import indicators as ta
 
-# Persist learned weights in the userbot runtime dir so a globally installed
+# Persist learned weights in the bot runtime dir so a globally installed
 # copy of the package can still write to disk (falls back to the package dir).
-try:
-    from userbot import runtime_dir as _runtime_dir
-except Exception:  # pragma: no cover - bare-import fallback
-    _runtime_dir = (lambda: Path(__file__).resolve().parent.parent)
+# Computed here instead of importing ``bot`` so ``python bot.py`` run from
+# inside the ``bot/`` folder also resolves to the right place.
+def _runtime_dir() -> Path:
+    override = os.environ.get("IQ_USERBOT_DIR")
+    if override:
+        d = Path(override).expanduser()
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    pkg = Path(__file__).resolve().parent.parent
+    if (pkg / ".env").is_file():
+        return pkg
+    home = Path.home() / ".iqapi"
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
 
 _WEIGHT_FILE = _runtime_dir() / "data" / "ai_weights.json"
 

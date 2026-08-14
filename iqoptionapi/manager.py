@@ -46,7 +46,7 @@ class IQAPI:
 
     ::
 
-        from api import IQAPI
+        from iqoptionapi import IQAPI
 
         iq = IQAPI()                       # credentials from IQ_EMAIL / IQ_PASSWORD
         iq.connect()

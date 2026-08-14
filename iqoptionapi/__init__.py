@@ -12,7 +12,7 @@ Modules
 
 Usage::
 
-    from api import IQAPI
+    from iqoptionapi import IQAPI
 
     with IQAPI() as iq:                 # credentials from IQ_EMAIL / IQ_PASSWORD
         iq.auth.set_account("PRACTICE")

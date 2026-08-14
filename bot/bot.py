@@ -4,7 +4,7 @@
     python bot.py
     python bot.py --dry-run
     python bot.py --strategy digital_ai --asset XAUUSD
-    python -m userbot
+    python -m bot
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ try:
         list_strategies,
         setup_logging,
     )
-except ImportError:  # python -m userbot.bot from the repo root
-    from userbot.core import (
+except ImportError:  # python -m bot.bot from the repo root
+    from bot.core import (
         ENV_PATH,
         RUNTIME_DIR,
         EnvConfig,
@@ -254,7 +254,7 @@ def main(argv: Optional[list] = None) -> int:
 def console_main() -> int:
     """Entry point for the installed ``bot`` console command.
 
-    Mirrors ``python -m userbot``: runs :func:`main` and translates its
+    Mirrors ``python -m bot``: runs :func:`main` and translates its
     integer return code into the process exit code.
     """
     raise SystemExit(main())

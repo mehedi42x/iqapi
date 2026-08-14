@@ -5,7 +5,7 @@
 A modular trader on top of `iq_option_api`. Strategies are plugins. Core owns the broker session.
 
 ```
-userbot/
+bot/
 ├── .env / .env.example     ← email, asset, timeframe, amount, strategy, risk
 ├── bot.py                  ← live console + instructions
 ├── core.py                 ← API, risk, money, execution (the only place that trades)
@@ -27,13 +27,20 @@ userbot/
 
 ## Setup
 
-রিপোর রুট থেকে:
+রিপোর রুট থেকে install + run:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r userbot/requirements.txt
-cp userbot/.env.example userbot/.env
-# edit userbot/.env  →  IQ_EMAIL / IQ_PASSWORD
+pip install -e .            # installs `iqoptionapi` + `bot` + the `bot` command
+bot --init                  # creates ~/.iqapi/.env (or bot/.env), logs, data
+# edit the generated .env  →  IQ_EMAIL / IQ_PASSWORD
+
+# run from the repo root:
+bot --list                  # or:  python -m bot --list
+
+# or run straight from inside this folder:
+cd bot
+python bot.py --list
+python bot.py --dry-run
 ```
 
 Login is HTTPS-first (SSID cookie on the websocket handshake), matching the
@@ -88,14 +95,14 @@ Exit code: `0` = সব পাস, `1` = কিছু ফেইল, `2` = সে
 ## Run
 
 ```bash
-# installed via pip (see root README) — same as `python -m userbot`:
+# installed via pip (see root README) — same as `python -m bot`:
 bot --init                        # scaffold ~/.iqapi/.env, logs, data
 bot --dry-run                     # সিগন্যাল-অনলি
 bot --strategy digital_ai --asset XAUUSD
 bot --list                        # ইনস্টল করা স্ট্র্যাটেজি
 
 # or straight from a checkout:
-cd userbot
+cd bot
 python bot.py                     # লাইভ লুপ
 python bot.py --dry-run           # সিগন্যাল-অনলি
 python bot.py --strategy digital_ai --asset XAUUSD
@@ -105,9 +112,9 @@ python backtest.py                # রেঞ্জ জিজ্ঞেস কর
 python backtest.py --range 1w --strategy gold_impulse --asset XAUUSD
 ```
 
-রিপো রুট থেকেও চালানো যায়: `python -m userbot` / `python userbot/bot.py`।
+রিপো রুট থেকেও চালানো যায়: `python -m bot` / `python bot/bot.py`।
 
-`backtest.py` চালালে প্রথমে ডেটা রেঞ্জ চাইবে। Enter দিলে সেই উইন্ডোর ক্যান্ডেল `core.py` দিয়ে নামবে (`.env` এর symbol / timeframe / amount / payout), তারপর স্ট্র্যাটেজি বার-বাই-বার সিমুলেট হবে। Win rate, PnL, profit factor, max drawdown, consecutive losses রিপোর্ট করবে। চাইলে JSON `userbot/data/` তে সেভ হয়।
+`backtest.py` চালালে প্রথমে ডেটা রেঞ্জ চাইবে। Enter দিলে সেই উইন্ডোর ক্যান্ডেল `core.py` দিয়ে নামবে (`.env` এর symbol / timeframe / amount / payout), তারপর স্ট্র্যাটেজি বার-বাই-বার সিমুলেট হবে। Win rate, PnL, profit factor, max drawdown, consecutive losses রিপোর্ট করবে। চাইলে JSON `bot/data/` তে সেভ হয়।
 
 ---
 
@@ -130,7 +137,7 @@ python backtest.py --range 1w --strategy gold_impulse --asset XAUUSD
 
 `STRATEGY=auto` হলে: গোল্ড অ্যাসেটে `gold_impulse`, digital এ `digital1`, blitz এ `blitz_flash`, নাহলে `binary1`।
 
-`digital_ai` ওয়েট `userbot/data/ai_weights.json` এ সেভ হয় — যত ট্রেড সেটেল হবে, মডেল তত অ্যাডাপ্ট করবে।
+`digital_ai` ওয়েট `bot/data/ai_weights.json` এ সেভ হয় — যত ট্রেড সেটেল হবে, মডেল তত অ্যাডাপ্ট করবে।
 
 ---
 

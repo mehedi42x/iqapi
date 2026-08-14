@@ -37,8 +37,8 @@ try:
         list_strategies,
         setup_logging,
     )
-except ImportError:  # python -m userbot.backtest from the repo root
-    from userbot.core import (
+except ImportError:  # python -m bot.backtest from the repo root
+    from bot.core import (
         DATA_DIR,
         ENV_PATH,
         EnvConfig,
@@ -402,7 +402,7 @@ def main(argv: Optional[list] = None) -> int:
     # backtest never places live orders
     cfg.dry_run = True
 
-    log = setup_logging(cfg.log_level, name="userbot.backtest")
+    log = setup_logging(cfg.log_level, name="bot.backtest")
     print(cyan("\n BACKTEST"))
     print("─" * 40)
     print(f" {cfg.resolved_strategy_name()}  {cfg.asset}  "
@@ -464,7 +464,7 @@ def _ask_save() -> bool:
     if not sys.stdin.isatty():
         return False
     try:
-        raw = input("  save JSON report to userbot/data/? [y/N] ").strip().lower()
+        raw = input("  save JSON report to bot/data/? [y/N] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()
         return False

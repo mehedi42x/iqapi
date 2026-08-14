@@ -1,6 +1,6 @@
 """IQ Option userbot — modular signal strategies on top of ``iq_option_api``.
 
-Strategies only emit signals.  :mod:`userbot.core` owns configuration, the
+Strategies only emit signals.  :mod:`bot.core` owns configuration, the
 broker session, risk, money-management and order execution so a custom
 strategy can never wedge the process.
 """
