@@ -36,6 +36,15 @@ cp userbot/.env.example userbot/.env
 # edit userbot/.env  →  IQ_EMAIL / IQ_PASSWORD
 ```
 
+`curl_cffi` is required so the login + websocket impersonate a real **Firefox**
+browser.  Without it Cloudflare times the handshake out after ~20s
+(`could not connect to any websocket endpoint`).
+
+```bash
+python livetest.py              # PRACTICE smoke test + $1 trades
+python livetest.py --no-trade   # connect / candles / payout only
+```
+
 `.env` এ যা সেট করা যায়:
 
 | Key | অর্থ |

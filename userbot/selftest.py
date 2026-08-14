@@ -13,12 +13,24 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent))
+sys.path.insert(0, str(_HERE))
 
 from strategies import discover, list_strategies, load_strategy  # noqa: E402
 from strategies import indicators as ta  # noqa: E402
 from strategies.base import Signal  # noqa: E402
 from core import EnvConfig, MoneyManager, SessionRisk, parse_timeframe  # noqa: E402
+
+from iq_option_api.connection.browser import (  # noqa: E402
+    FIREFOX_USER_AGENT,
+    cookie_header,
+    looks_like_challenge,
+    origin_for,
+    resolve_impersonate,
+    ws_header_list,
+)
+from iq_option_api.config import ConnectionConfig  # noqa: E402
 
 
 @dataclass
@@ -110,6 +122,26 @@ def main() -> int:
         # short tape must hold, not crash
         short = strat.safe_analyze(tape[:5], ctx)
         check(f"{name} warmup", short.action == "hold")
+
+    print("browser / firefox handshake")
+    check("firefox ua", "Firefox/" in FIREFOX_USER_AGENT and "Gecko/" in FIREFOX_USER_AGENT)
+    check("origin wss", origin_for("wss://iqoption.com/echo/websocket") == "https://iqoption.com")
+    check("cookie header", cookie_header({"ssid": "abc", "cf": "1"}) == "ssid=abc; cf=1")
+    headers = ws_header_list(FIREFOX_USER_AGENT, "https://iqoption.com")
+    check("ws ua header", any(h.startswith("User-Agent: ") and "Firefox/" in h for h in headers))
+    check("ws origin header", "Origin: https://iqoption.com" in headers)
+    check("impersonate off", resolve_impersonate("off") == "")
+    check("impersonate firefox", resolve_impersonate("firefox") in {"firefox", "firefox147", "firefox144", "firefox135", "firefox133", ""})
+    conn = ConnectionConfig()
+    check("default ua is firefox", "Firefox/" in conn.user_agent)
+    check("default impersonate", conn.impersonate == "firefox")
+    check("connect timeout 30", conn.connect_timeout >= 30)
+
+    class _Resp:
+        status_code = 403
+        headers = {"content-type": "text/html"}
+        text = "<html>Just a moment...</html>"
+    check("cf challenge detect", looks_like_challenge(_Resp()))
 
     print("core helpers")
     check("tf 1m", parse_timeframe("1m") == 60)
