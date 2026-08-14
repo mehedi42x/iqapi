@@ -28,9 +28,30 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 # ---------------------------------------------------------------------------
 USERBOT_DIR = Path(__file__).resolve().parent
 REPO_DIR = USERBOT_DIR.parent
-ENV_PATH = USERBOT_DIR / ".env"
-LOG_DIR = USERBOT_DIR / "logs"
-DATA_DIR = USERBOT_DIR / "data"
+ENV_EXAMPLE = USERBOT_DIR / ".env.example"
+
+# Writable state lives in a runtime dir (see userbot.runtime_dir).  It points
+# at the source folder for checkouts, and at ~/.iqapi for installed packages.
+try:
+    from . import runtime_dir as _runtime_dir
+except Exception:  # pragma: no cover - bare-import fallback
+    from userbot import runtime_dir as _runtime_dir
+
+RUNTIME_DIR = _runtime_dir()
+ENV_PATH = RUNTIME_DIR / ".env"
+LOG_DIR = RUNTIME_DIR / "logs"
+DATA_DIR = RUNTIME_DIR / "data"
+
+
+def init_runtime(*, force: bool = False) -> Path:
+    """Scaffold the writable runtime dir: ``logs/``, ``data/`` and a ``.env``
+    (copied from ``.env.example`` on first run).  Returns :data:`RUNTIME_DIR`."""
+    for d in (RUNTIME_DIR, LOG_DIR, DATA_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+    env = RUNTIME_DIR / ".env"
+    if (not env.exists() or force) and ENV_EXAMPLE.exists():
+        env.write_text(ENV_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    return RUNTIME_DIR
 
 
 def _bootstrap() -> None:
@@ -1137,5 +1158,6 @@ __all__ = [
     "discover", "list_strategies", "load_strategy",
     "setup_logging", "parse_timeframe", "format_tf", "format_money",
     "expand_assets", "is_gold", "pick_auto_strategy",
-    "USERBOT_DIR", "REPO_DIR", "ENV_PATH",
+    "USERBOT_DIR", "REPO_DIR", "RUNTIME_DIR", "ENV_PATH",
+    "LOG_DIR", "DATA_DIR", "ENV_EXAMPLE", "init_runtime",
 ]

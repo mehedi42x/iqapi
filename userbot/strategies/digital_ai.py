@@ -24,8 +24,14 @@ from typing import Any, Dict, List, Optional, Sequence
 from .base import Strategy, Signal
 from . import indicators as ta
 
+# Persist learned weights in the userbot runtime dir so a globally installed
+# copy of the package can still write to disk (falls back to the package dir).
+try:
+    from userbot import runtime_dir as _runtime_dir
+except Exception:  # pragma: no cover - bare-import fallback
+    _runtime_dir = (lambda: Path(__file__).resolve().parent.parent)
 
-_WEIGHT_FILE = Path(__file__).resolve().parent.parent / "data" / "ai_weights.json"
+_WEIGHT_FILE = _runtime_dir() / "data" / "ai_weights.json"
 
 # Hand-seeded priors — overwritten as the learner sees live results.
 _PRIOR_TREND = [

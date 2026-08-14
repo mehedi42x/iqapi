@@ -88,8 +88,14 @@ Exit code: `0` = সব পাস, `1` = কিছু ফেইল, `2` = সে
 ## Run
 
 ```bash
-cd userbot
+# installed via pip (see root README) — same as `python -m userbot`:
+bot --init                        # scaffold ~/.iqapi/.env, logs, data
+bot --dry-run                     # সিগন্যাল-অনলি
+bot --strategy digital_ai --asset XAUUSD
+bot --list                        # ইনস্টল করা স্ট্র্যাটেজি
 
+# or straight from a checkout:
+cd userbot
 python bot.py                     # লাইভ লুপ
 python bot.py --dry-run           # সিগন্যাল-অনলি
 python bot.py --strategy digital_ai --asset XAUUSD
