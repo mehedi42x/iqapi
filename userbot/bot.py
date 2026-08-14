@@ -187,6 +187,13 @@ def main(argv: Optional[list] = None) -> int:
         print(green(f" ● {core.account_type()}  "
                     f"{format_money(core.balance(), core.currency())}  "
                     f"{core.strategy.name}"))
+        try:
+            st = core.client.connection_status() if core.client else {}
+            via = st.get("transport") or ""
+            if via:
+                print(dim(f" via {via}  {st.get('url') or ''}"))
+        except Exception:
+            pass
         print(rule())
     except Exception as exc:
         print(red(f" ✗ connect: {exc}"))

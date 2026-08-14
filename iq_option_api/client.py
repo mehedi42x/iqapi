@@ -157,11 +157,16 @@ class IQOptionClient:
     # ==================================================================
     def connect(self, *, authenticate: bool = True,
                 two_factor_code: Optional[str] = None) -> bool:
-        """CONNECT (+ AUTHENTICATE) - the first step of every session."""
-        if not self.ws.is_connected:
-            self.ws.connect()
+        """CONNECT (+ AUTHENTICATE) - the first step of every session.
+
+        When ``authenticate`` is true we log in over HTTPS first (Firefox
+        impersonation + cookies) and only then open the websocket.  Opening
+        the socket first is how Cloudflare used to time the handshake out.
+        """
         if authenticate:
             return self.login(two_factor_code=two_factor_code)
+        if not self.ws.is_connected:
+            self.ws.connect()
         return self.ws.is_connected
 
     @property

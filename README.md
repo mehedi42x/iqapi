@@ -14,8 +14,14 @@ IQ Option-এর জন্য একটি সম্পূর্ণ **modular tr
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install websocket-client requests
+.venv/bin/pip install -r requirements.txt
+# websocket-client, requests, and curl_cffi (Firefox TLS impersonation)
 ```
+
+IQ Option sits behind Cloudflare.  A stock Python TLS fingerprint is silently
+dropped (the websocket handshake just hangs until `connect_timeout`).  The
+client impersonates **Firefox 147** via `curl_cffi` and logs in over HTTPS
+*before* opening `wss://…/echo/websocket`, carrying the same cookies.
 
 Credentials কখনো কোডে hardcode হয় না — environment বা JSON config থেকে আসে:
 

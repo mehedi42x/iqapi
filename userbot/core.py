@@ -245,6 +245,7 @@ class EnvConfig:
     auth_host: str = ""
     origin: str = ""
     user_agent: str = ""
+    impersonate: str = "firefox"
     enable_ssl: bool = True
 
     source: Path = field(default_factory=lambda: ENV_PATH)
@@ -320,6 +321,7 @@ class EnvConfig:
             auth_host=get("IQ_AUTH_HOST", "AUTH_HOST").strip(),
             origin=get("IQ_ORIGIN", "ORIGIN").strip(),
             user_agent=get("IQ_USER_AGENT", "USER_AGENT").strip(),
+            impersonate=get("IQ_IMPERSONATE", "IMPERSONATE", default="firefox").strip() or "firefox",
             enable_ssl=as_bool(get("IQ_SSL", "SSL"), True),
             source=path,
         )
@@ -584,7 +586,8 @@ class UserBotCore:
             ),
         )
         iq_cfg.connection.request_timeout = self.cfg.request_timeout
-        iq_cfg.connection.connect_timeout = min(20.0, self.cfg.request_timeout)
+        iq_cfg.connection.connect_timeout = max(
+            30.0, min(45.0, float(self.cfg.request_timeout) + 10.0))
 
         # Allow overriding the connection endpoints from .env (empty == defaults).
         conn = iq_cfg.connection
@@ -601,6 +604,8 @@ class UserBotCore:
             conn.origin = self.cfg.origin
         if self.cfg.user_agent:
             conn.user_agent = self.cfg.user_agent
+        if self.cfg.impersonate:
+            conn.impersonate = self.cfg.impersonate
         conn.enable_ssl = self.cfg.enable_ssl
 
         self.client = IQOptionClient(iq_cfg)

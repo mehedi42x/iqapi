@@ -23,14 +23,15 @@ DEFAULT_HOST = "iqoption.com"
 # tries them in order and sticks with the first one that answers, so a single
 # blocked/geo-routed hostname no longer wedges the whole bot.  ``iqbroker.com``
 # is the sister brand that shares the exact same platform + protocol.
-DEFAULT_WS_HOSTS = ("iqoption.com", "iqbroker.com")
-# A real browser UA.  IQ Option sits behind Cloudflare which silently drops
-# handshakes that advertise an obviously non-browser client (the old
-# ``iq-option-api/1.0 (+python)`` string is a reliable way to get a 20s timeout).
+DEFAULT_WS_HOSTS = ("iqoption.com", "iqbroker.com", "eu.iqoption.com")
+# Real Firefox UA.  Must stay in lockstep with curl_cffi's ``firefox`` alias
+# (currently Firefox 147) so the User-Agent and the TLS fingerprint match.
+# Cloudflare silently drops Python's JA3 — a fake UA alone is not enough.
 DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) "
+    "Gecko/20100101 Firefox/147.0"
 )
+DEFAULT_IMPERSONATE = "firefox"
 PRACTICE = "PRACTICE"
 REAL = "REAL"
 
@@ -121,7 +122,7 @@ class ConnectionConfig:
     websocket_path: str = "/echo/websocket"
     api_path: str = "/api"
     request_timeout: float = 30.0
-    connect_timeout: float = 20.0
+    connect_timeout: float = 30.0
     heartbeat_interval: float = 10.0
     ping_interval: float = 20.0
     ping_timeout: float = 10.0
@@ -129,8 +130,13 @@ class ConnectionConfig:
     enable_ssl: bool = True
     proxy: Optional[str] = None
     user_agent: str = DEFAULT_USER_AGENT
+    # curl_cffi browser profile used for HTTP login + the websocket handshake.
+    # ``firefox`` (default) is what the web client looks like.  Set to ``""``
+    # to disable impersonation and fall back to websocket-client.
+    impersonate: str = DEFAULT_IMPERSONATE
     # Explicit ``Origin`` header for the handshake.  ``None`` derives it from
-    # the host (``https://<host>``), which is what the browser client sends.
+    # the host being connected (``https://<host>``), which is what the browser
+    # client sends.
     origin: Optional[str] = None
     # Optional ``Sec-WebSocket-Protocol`` subprotocols offered in the handshake.
     subprotocols: tuple = ()
@@ -179,6 +185,30 @@ class ConnectionConfig:
         #       {"identifier": email, "password": password}
         scheme = "https" if self.enable_ssl else "http"
         return f"{scheme}://{self.resolved_auth_host}{self.api_path}/v2/login"
+
+    @property
+    def auth_urls(self) -> list:
+        """Login endpoints, primary first.  Sister-brand hosts are fallbacks."""
+        urls: list = [self.auth_url]
+        scheme = "https" if self.enable_ssl else "http"
+        for host in ("auth.iqoption.com", "auth.iqbroker.com"):
+            url = f"{scheme}://{host}{self.api_path}/v2/login"
+            if url not in urls:
+                urls.append(url)
+        return urls
+
+    @property
+    def warmup_urls(self) -> list:
+        """Pages fetched before login so Cloudflare can issue clearance cookies."""
+        scheme = "https" if self.enable_ssl else "http"
+        urls: list = []
+        for host in (self.host, "login.iqoption.com", *self.websocket_hosts):
+            if not host:
+                continue
+            url = f"{scheme}://{host}/"
+            if url not in urls:
+                urls.append(url)
+        return urls[:4]
 
 
 @dataclass

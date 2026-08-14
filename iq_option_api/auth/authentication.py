@@ -2,13 +2,16 @@
 
 Flow
 ----
-1. ``login()`` -> HTTPS ``POST https://auth.iqoption.com/api/v2/login``
+1. Warm up ``https://iqoption.com/`` with a Firefox TLS fingerprint
+   (``curl_cffi``) so Cloudflare issues cookies.
+2. ``login()`` -> HTTPS ``POST https://auth.iqoption.com/api/v2/login``
    (``{"identifier": email, "password": password}``) -> SSID (the ``ssid`` cookie).
-2. The SSID is sent over the websocket as an ``ssid`` frame; the server answers
+3. Open the websocket *with those cookies* and the same Firefox impersonation.
+4. The SSID is sent over the websocket as an ``ssid`` frame; the server answers
    with ``profile`` / ``authenticated``.
-3. The SSID is persisted so the next run can *restore* the session instead of
+5. The SSID is persisted so the next run can *restore* the session instead of
    logging in again.
-4. ``ensure_authenticated()`` validates, and re-logins automatically when the
+6. ``ensure_authenticated()`` validates, and re-logins automatically when the
    session is expired or was rejected.
 """
 
@@ -20,6 +23,10 @@ import time
 from typing import Any, Dict, Optional
 
 from ..config import Credentials, IQConfig
+from ..connection.browser import (
+    extract_cookies,
+    looks_like_challenge,
+)
 from ..connection.protocol import FRAME_AUTH, MS_GET_PROFILE
 from ..connection.websocket import WebSocketClient
 from ..exceptions import (
@@ -91,14 +98,22 @@ class Authenticator:
     # HTTP login
     # ==================================================================
     def _session_http(self):
+        # Prefer the websocket client's shared Firefox session so login
+        # cookies (ssid, cf_clearance) ride on the same handshake.
+        if hasattr(self.ws, "browser_session"):
+            self._http = self.ws.browser_session()
+            return self._http
         if requests is None:  # pragma: no cover
-            raise AuthenticationError("requests is required: pip install requests")
+            raise AuthenticationError(
+                "requests or curl_cffi is required: pip install curl_cffi requests")
         if self._http is None:
             self._http = requests.Session()
             self._http.headers.update({
                 "User-Agent": self.config.connection.user_agent,
                 "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": self.config.connection.origin_header,
+                "Referer": f"{self.config.connection.origin_header}/en/login",
             })
             if self.config.connection.proxy:
                 self._http.proxies = {
@@ -106,6 +121,25 @@ class Authenticator:
                     "https": self.config.connection.proxy,
                 }
         return self._http
+
+    def _sync_cookies(self) -> Dict[str, str]:
+        cookies = extract_cookies(self._http) if self._http is not None else {}
+        if self.session.ssid:
+            cookies["ssid"] = self.session.ssid
+        if hasattr(self.ws, "cookies"):
+            self.ws.cookies.update(cookies)
+        return cookies
+
+    def _warmup(self) -> None:
+        """Hit the site like a browser so Cloudflare can issue cookies."""
+        http = self._session_http()
+        for url in self.config.connection.warmup_urls:
+            try:
+                http.get(url, timeout=min(12.0, self.config.connection.connect_timeout))
+                self.log.debug("warmup %s ok", url)
+            except Exception as exc:
+                self.log.debug("warmup %s: %s", url, exc)
+        self._sync_cookies()
 
     def login(self, email: Optional[str] = None, password: Optional[str] = None,
               *, two_factor_code: Optional[str] = None) -> str:
@@ -115,22 +149,59 @@ class Authenticator:
         creds.validate()
 
         http = self._session_http()
+        self._warmup()
         payload: Dict[str, Any] = {"identifier": creds.email, "password": creds.password}
         if two_factor_code:
             payload["code"] = two_factor_code
 
-        url = self.config.connection.auth_url
-        self.log.info("logging in as %s", creds.email)
+        # Make sure JSON + browser headers ride on every attempt.
         try:
-            response = http.post(url, json=payload,
-                                 timeout=self.config.connection.connect_timeout)
-        except Exception as exc:
-            raise IQConnectionError(f"login request failed: {exc}") from exc
+            http.headers.update({
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+            })
+        except Exception:
+            pass
+
+        response = None
+        last_error: Optional[str] = None
+        for url in self.config.connection.auth_urls:
+            self.log.info("logging in as %s via %s", creds.email, url)
+            try:
+                response = http.post(url, json=payload,
+                                     timeout=self.config.connection.connect_timeout)
+            except Exception as exc:
+                last_error = str(exc)
+                self.log.warning("login request to %s failed: %s", url, exc)
+                response = None
+                continue
+            if looks_like_challenge(response):
+                last_error = f"Cloudflare challenge page from {url}"
+                self.log.warning("%s", last_error)
+                response = None
+                continue
+            break
+
+        if response is None:
+            from ..connection.browser import impersonation_available
+            extra = (
+                " Network/TLS to auth.iqoption.com failed."
+                if impersonation_available()
+                else " Install curl_cffi (pip install curl_cffi) so login impersonates Firefox."
+            )
+            raise IQConnectionError(
+                f"login request failed: {last_error or 'no auth endpoint answered'}.{extra}")
 
         try:
             data = response.json()
         except ValueError:
             data = {}
+            body = (getattr(response, "text", None) or "")[:240]
+            if looks_like_challenge(response) or "<html" in body.lower():
+                raise IQConnectionError(
+                    "login returned an HTML challenge instead of JSON. "
+                    "Cloudflare is blocking this TLS fingerprint — "
+                    "pip install curl_cffi and retry.")
 
         if response.status_code in (401, 403):
             raise AuthenticationError(
@@ -160,6 +231,7 @@ class Authenticator:
                 max_age=self.config.session_store.max_age,
             )
         self.log.info("SSID acquired (user_id=%s)", data.get("user_id"))
+        self._sync_cookies()
         self.persist()
         return ssid
 

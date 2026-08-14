@@ -18,11 +18,23 @@ import time
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
+from urllib.parse import urlparse
+
 from ..config import ConnectionConfig, ReconnectPolicy
 from ..exceptions import (
     ConnectionError as IQConnectionError,
     ProtocolError,
     TimeoutError as IQTimeoutError,
+)
+from .browser import (
+    ImpersonatedSocket,
+    cookie_header,
+    create_http_session,
+    impersonation_available,
+    origin_for,
+    resolve_impersonate,
+    ws_extra_headers,
+    ws_header_list,
 )
 from .protocol import (
     FRAME_HEARTBEAT,
@@ -70,6 +82,7 @@ class WebSocketClient:
 
         self._ws: Any = None
         self._app: Any = None
+        self._http: Any = None
         self._connected_url: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
@@ -78,6 +91,8 @@ class WebSocketClient:
         self._connected_event = threading.Event()
         self._closed_by_user = False
         self._send_lock = threading.Lock()
+        self.cookies: Dict[str, str] = {}
+        self._transport: Optional[str] = None
 
         # server time sync
         self._server_time: float = 0.0
@@ -130,15 +145,30 @@ class WebSocketClient:
             "time_offset": self._time_offset,
             "last_message_age": (time.time() - self._last_message_at) if self._last_message_at else None,
             "last_error": self.last_error,
+            "transport": self._transport,
+            "impersonate": resolve_impersonate(self.config.impersonate) or None,
+            "user_agent": self.config.user_agent,
+            "has_ssid_cookie": bool(self.cookies.get("ssid")),
         }
+
+    def browser_session(self) -> Any:
+        """Shared Firefox-impersonated HTTP session (login + WS cookies)."""
+        if self._http is None:
+            self._http = create_http_session(self.config)
+            self.log.info("http transport: %s",
+                          getattr(self._http, "_iq_transport", "unknown"))
+        return self._http
 
     # ==================================================================
     # Lifecycle
     # ==================================================================
-    def connect(self, timeout: Optional[float] = None) -> bool:
-        if _ws is None:  # pragma: no cover
+    def connect(self, timeout: Optional[float] = None,
+                cookies: Optional[Dict[str, str]] = None) -> bool:
+        if cookies:
+            self.cookies.update({k: v for k, v in cookies.items() if k and v})
+        if _ws is None and not impersonation_available():  # pragma: no cover
             raise IQConnectionError(
-                "websocket-client is required: pip install websocket-client")
+                "install a websocket transport: pip install curl_cffi websocket-client")
         if self.is_connected:
             return True
 
@@ -146,82 +176,155 @@ class WebSocketClient:
         self._closed_by_user = False
         self._set_state(ConnectionState.CONNECTING)
 
-        # Headers that make the handshake look like the real web client.
-        # Cloudflare drops requests that advertise a bot UA.  Origin is passed
-        # to run_forever() via the ``origin`` kwarg (the library sets the header).
-        headers: List[str] = [
-            f"User-Agent: {self.config.user_agent}",
-            "Accept-Language: en-US,en;q=0.9",
-            "Cache-Control: no-cache",
-            "Pragma: no-cache",
-        ]
-        sslopt = None if self.config.enable_ssl else {"cert_reqs": ssl.CERT_NONE}
-        proxy_kwargs: Dict[str, Any] = {}
-        if self.config.proxy:
-            host, _, port = self.config.proxy.replace("http://", "").replace("https://", "").partition(":")
-            proxy_kwargs = {"http_proxy_host": host, "http_proxy_port": int(port or 8080)}
-        subprotocols = list(self.config.subprotocols) or None
-
         urls = self.config.websocket_urls
         last_error: Optional[str] = None
         connected_url: Optional[str] = None
 
-        for url in urls:
-            if self._closed_by_user:
+        # Prefer Firefox TLS impersonation (curl_cffi).  Python's own JA3 is
+        # what Cloudflare drops, which surfaces as a 20s handshake timeout.
+        transports: List[str] = []
+        if impersonation_available() and resolve_impersonate(self.config.impersonate):
+            transports.append("impersonate")
+        if _ws is not None:
+            transports.append("websocket-client")
+        if not transports:
+            raise IQConnectionError(
+                "no websocket transport available — pip install curl_cffi websocket-client")
+
+        for transport in transports:
+            for url in urls:
+                if self._closed_by_user:
+                    break
+                if self._try_connect_url(url, timeout, transport):
+                    connected_url = url
+                    break
+                last_error = self.last_error or (
+                    f"connection to {url} via {transport} failed")
+                self._teardown_failed_attempt()
+            if connected_url:
                 break
-            self._connected_event.clear()
-            self._app = _ws.WebSocketApp(
+
+        if connected_url is None:
+            self._set_state(ConnectionState.FAILED)
+            self.close()
+            raise IQConnectionError(self._connect_error(urls, last_error))
+
+        self._start_heartbeat()
+        return True
+
+    def _try_connect_url(self, url: str, timeout: float, transport: str) -> bool:
+        self._connected_event.clear()
+        host = urlparse(url).hostname or self.config.host
+        origin = self.config.origin or origin_for(host, tls=self.config.enable_ssl)
+        impersonate = resolve_impersonate(self.config.impersonate)
+
+        if transport == "impersonate":
+            self._app = ImpersonatedSocket(
                 url,
-                header=headers,
+                session=self.browser_session(),
+                impersonate=impersonate,
+                headers=ws_extra_headers(origin),
+                cookies=dict(self.cookies),
+                timeout=timeout,
+                proxy=self.config.proxy,
                 on_open=self._on_open,
                 on_message=self._on_message,
                 on_error=self._on_error,
                 on_close=self._on_close,
             )
+            self._transport = f"curl_cffi/{impersonate}"
+        else:
+            headers = ws_header_list(self.config.user_agent, origin)
+            cookie = cookie_header(self.cookies)
+            self._app = _ws.WebSocketApp(
+                url,
+                header=headers,
+                cookie=cookie or None,
+                subprotocols=list(self.config.subprotocols) or None,
+                on_open=self._on_open,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close,
+            )
+            self._transport = "websocket-client"
 
-            def _run(app: Any = self._app, run_url: str = url) -> None:
-                try:
+        self.log.info("websocket handshake %s via %s (origin=%s ua=Firefox)",
+                      url, self._transport, origin)
+
+        def _run(app: Any = self._app, run_url: str = url, how: str = transport,
+                 run_origin: str = origin) -> None:
+            try:
+                if how == "impersonate":
+                    app.run_forever()
+                else:
+                    sslopt = None if self.config.enable_ssl else {"cert_reqs": ssl.CERT_NONE}
+                    proxy_kwargs: Dict[str, Any] = {}
+                    if self.config.proxy:
+                        host_p, _, port = (self.config.proxy
+                                           .replace("http://", "")
+                                           .replace("https://", "")
+                                           .partition(":"))
+                        proxy_kwargs = {
+                            "http_proxy_host": host_p,
+                            "http_proxy_port": int(port or 8080),
+                        }
                     app.run_forever(
                         sslopt=sslopt,
                         ping_interval=int(self.config.ping_interval),
                         ping_timeout=int(self.config.ping_timeout),
-                        origin=self.config.origin_header,
-                        subprotocols=subprotocols,
+                        origin=run_origin,
                         **proxy_kwargs,
                     )
-                except Exception as exc:  # pragma: no cover - transport level
-                    self.last_error = str(exc)
-                    self.log.error("websocket loop crashed (%s): %s", run_url, exc)
-                finally:
-                    self._handle_disconnect()
+            except Exception as exc:  # pragma: no cover - transport level
+                self.last_error = str(exc)
+                self.log.error("websocket loop crashed (%s / %s): %s", run_url, how, exc)
+            finally:
+                self._handle_disconnect()
 
-            self._thread = threading.Thread(target=_run, name="iq-ws-reader", daemon=True)
-            self._thread.start()
+        self._thread = threading.Thread(target=_run, name="iq-ws-reader", daemon=True)
+        self._thread.start()
 
-            if self._connected_event.wait(timeout):
-                connected_url = url
-                break
+        deadline = time.time() + float(timeout)
+        while time.time() < deadline:
+            if self._connected_event.is_set():
+                return True
+            # Handshake errors (TLS drop, refused, etc.) kill the reader
+            # thread immediately — don't sit on the full timeout.
+            if self._thread is not None and not self._thread.is_alive():
+                if not self.last_error:
+                    self.last_error = f"connection to {url} failed immediately ({transport})"
+                self.log.warning("%s", self.last_error)
+                return False
+            remaining = deadline - time.time()
+            self._connected_event.wait(min(0.2, max(0.01, remaining)))
 
-            # This host did not answer in time — tear it down and try the next.
-            last_error = f"connection to {url} timed out after {timeout}s"
-            self.log.warning("%s", last_error)
-            self.close()
-            # Let the reader thread unwind (it sees _closed_by_user=True and
-            # exits cleanly), then arm the flag again for the next host.
-            if self._thread is not None and self._thread.is_alive():
-                self._thread.join(timeout=2.0)
-            self._closed_by_user = False
-            self._set_state(ConnectionState.CONNECTING)
+        self.last_error = f"connection to {url} timed out after {timeout}s ({transport})"
+        self.log.warning("%s", self.last_error)
+        return False
 
-        if connected_url is None:
-            self._set_state(ConnectionState.FAILED)
-            self.close()
-            raise IQConnectionError(
-                f"could not connect to any websocket endpoint "
-                f"({', '.join(urls)}): {last_error or 'timed out'}")
+    def _teardown_failed_attempt(self) -> None:
+        self.close()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        self._closed_by_user = False
+        self._set_state(ConnectionState.CONNECTING)
 
-        self._start_heartbeat()
-        return True
+    @staticmethod
+    def _connect_error(urls: List[str], last_error: Optional[str]) -> str:
+        hint = (
+            "Cloudflare likely dropped the TLS handshake (Python JA3). "
+            "Install curl_cffi so the bot impersonates Firefox: "
+            "pip install 'curl_cffi>=0.7'"
+        )
+        if impersonation_available():
+            hint = (
+                "Tried Firefox TLS impersonation and the stock websocket-client. "
+                "Check network / region / IQ_PROXY, or set IQ_WS_HOSTS."
+            )
+        return (
+            f"could not connect to any websocket endpoint "
+            f"({', '.join(urls)}): {last_error or 'timed out'}. {hint}"
+        )
 
     def close(self) -> None:
         self._closed_by_user = True
@@ -277,7 +380,9 @@ class WebSocketClient:
                 self.on_disconnected()
             except Exception as exc:  # pragma: no cover
                 self.log.warning("on_disconnected hook failed: %s", exc)
-        if self._closed_by_user:
+        # A failed *initial* handshake must not start the reconnect storm —
+        # only a socket that was actually CONNECTED gets replayed.
+        if self._closed_by_user or not was_connected:
             self._set_state(ConnectionState.DISCONNECTED)
             return
         if self.reconnect_policy.enabled:
@@ -350,7 +455,15 @@ class WebSocketClient:
         data = self.protocol.encode(frame)
         with self._send_lock:
             try:
-                self._ws.send(data)
+                sock = self._ws
+                if sock is None:
+                    raise IQConnectionError("websocket is not connected")
+                if isinstance(data, str) and hasattr(sock, "send_str"):
+                    sock.send_str(data)
+                else:
+                    sock.send(data)
+            except IQConnectionError:
+                raise
             except Exception as exc:
                 self.last_error = str(exc)
                 raise IQConnectionError(f"send failed: {exc}") from exc
