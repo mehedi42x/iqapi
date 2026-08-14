@@ -149,6 +149,30 @@ class AccountManager:
     def switch_account(self, account_type: "AccountType | str") -> Account:
         return self.use_account(account_type)
 
+    def change_balance(self, balance_mode: str = "PRACTICE") -> Account:
+        """Select an account by mode name (``"PRACTICE"`` / ``"REAL"``).
+
+        The balance id is never assumed: the list from ``get-balances`` is
+        searched for the matching server type (PRACTICE = type 4, REAL =
+        type 1) and the switch is verified against fresh server data.
+        """
+        mode = str(balance_mode).strip().upper()
+        aliases = {
+            "PRACTICE": AccountType.PRACTICE, "DEMO": AccountType.PRACTICE,
+            "TRAINING": AccountType.PRACTICE,
+            "REAL": AccountType.REAL, "LIVE": AccountType.REAL,
+        }
+        account_type = aliases.get(mode)
+        if account_type is None:
+            try:
+                account_type = AccountType(mode)
+            except ValueError as exc:
+                raise AccountError(f"unknown balance mode: {balance_mode!r}") from exc
+        account = self.use_account(account_type)
+        self.log.info("balance switched to %s (ID: %s)",
+                      account_type.value, account.balance_id)
+        return account
+
     def verify_switch(self, expected_balance_id: int) -> bool:
         """Re-read balances and confirm the requested id really exists/matches."""
         balance = self.balances.get(int(expected_balance_id), refresh=True)

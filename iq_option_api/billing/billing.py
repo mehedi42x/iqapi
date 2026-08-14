@@ -45,7 +45,9 @@ class BillingManager:
         if not refresh and self._raw and time.time() - self._fetched_at < max_age:
             return [Balance.from_payload(item) for item in self._raw]
 
-        payload = self.ws.call(MS_GET_BALANCES, "", version="1.0", timeout=timeout)
+        # InternalBilling requires a JSON object body - an empty string is
+        # rejected with "parse error: expected { near offset 2 of ''".
+        payload = self.ws.call(MS_GET_BALANCES, {}, version="1.0", timeout=timeout)
         items = payload if isinstance(payload, list) else (
             payload.get("balances") or payload.get("items") or []
             if isinstance(payload, dict) else [])

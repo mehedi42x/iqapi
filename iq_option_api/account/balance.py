@@ -32,8 +32,15 @@ class BalanceManager:
     # ------------------------------------------------------------------
     def refresh(self, *, timeout: Optional[float] = None,
                 types_ids: Optional[List[int]] = None) -> List[Balance]:
-        """Fetch balances from the server.  Always the source of truth."""
-        body: Any = {"types_ids": types_ids} if types_ids else ""
+        """Fetch balances from the server.  Always the source of truth.
+
+        ``types_ids`` selects server-side balance types
+        (``1`` = real, ``4`` = practice, ``2`` = tournament); ``None`` asks
+        for every balance.  The body must always be a JSON object - the
+        server rejects an empty string with
+        ``parse error: expected { near offset 2 of ''``.
+        """
+        body: Dict[str, Any] = {"types_ids": types_ids} if types_ids else {}
         payload = self.ws.call(MS_GET_BALANCES, body, version="1.0", timeout=timeout)
 
         items = payload

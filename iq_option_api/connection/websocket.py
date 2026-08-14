@@ -535,7 +535,16 @@ class WebSocketClient:
     def call(self, microservice: str, body: Any, *,
              version: str = "1.0", timeout: Optional[float] = None,
              raw: bool = False) -> Any:
-        """Invoke a microservice through ``sendMessage`` and await the reply."""
+        """Invoke a microservice through ``sendMessage`` and await the reply.
+
+        The platform's microservice gateway requires every ``body`` to be a
+        JSON object: an empty string is rejected with
+        ``parse error: expected { near offset 2 of ''``.  ``None`` / ``""``
+        therefore mean "no parameters" and are normalised to ``{}`` here so
+        no call site can accidentally send the rejected empty-string body.
+        """
+        if body is None or body == "":
+            body = {}
         msg = build_microservice_call(microservice, body, version=version)
         return self.send_request(FRAME_SEND_MESSAGE, msg, timeout=timeout, raw=raw)
 

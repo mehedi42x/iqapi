@@ -254,6 +254,14 @@ class IQOptionClient:
     def use_practice(self) -> Account:
         return self.use_account(AccountType.PRACTICE)
 
+    def change_balance(self, balance_mode: str = "PRACTICE") -> Account:
+        """Switch account by mode name - ``"PRACTICE"`` / ``"REAL"``.
+
+        The balance id is resolved from the server's ``get-balances`` list
+        (PRACTICE = type 4, REAL = type 1) and the switch is verified.
+        """
+        return self.accounts.change_balance(balance_mode)
+
     use_demo = use_practice
 
     def use_real(self) -> Account:
