@@ -521,23 +521,21 @@ class DigitalOptions:
                                    amount=amount, balance_id=balance_id)
         self.orders.validate(order, balance=self._balance())
 
-        # ``digital-options.place-digital-option`` is a **v3.0** microservice.
-        # The direction, asset and expiry are all encoded in ``instrument_id``
-        # (taken from the price stream, never invented); ``instrument_index``
-        # and ``asset_id`` are sent when the book gave them to us, which is
-        # what the current platform expects.
+        # ``digital-options.place-digital-option`` is a **v3.0** microservice
+        # and takes exactly these three fields (captured wire traffic):
+        #   {"user_balance_id": int, "instrument_id": str, "amount": str}
+        # The direction, asset, strike and expiry are all encoded inside
+        # ``instrument_id`` (taken from the price stream, never invented), so
+        # nothing else needs to be sent - extra fields risk a parse error.
         body: Dict[str, Any] = {
             "user_balance_id": int(balance_id),
             "instrument_id": str(instrument.instrument_id),
             "amount": self._format_amount(amount),
         }
-        if instrument.index is not None:
-            body["instrument_index"] = int(instrument.index)
-        if instrument.asset_id:
-            body["asset_id"] = int(instrument.asset_id)
 
-        # Digital placement answers with a ``digital-option-placed`` broadcast
-        # that often omits the envelope request_id - correlate on the symbol.
+        # The reply is ``{"name": "digital-option-placed", "msg": {"id": ...},
+        # "status": 2000}`` and often omits the envelope request_id, so
+        # correlate the broadcast on the symbol we just sent.
         matcher = digital_matcher(instrument_id=body["instrument_id"],
                                   balance_id=body["user_balance_id"])
         return self.orders.submit(order, MS_DIGITAL_PLACE, body,

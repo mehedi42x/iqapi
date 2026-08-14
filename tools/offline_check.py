@@ -592,13 +592,125 @@ def _digital_body():
     assert sent["microservice"] == "digital-options.place-digital-option", sent
     # place-digital-option is a v3.0 microservice - v1.0 is not routed.
     assert sent["version"] == "3.0", sent["version"]
+    # Exactly the three captured fields, nothing else.
+    assert set(body) == {"user_balance_id", "instrument_id", "amount"}, body
     assert body["instrument_id"] == "do1861A20260812D052000T1MCSPT", body
-    assert body["instrument_index"] == 835766, body
-    assert body["asset_id"] == 1861, body
     # amount rides as a string, whole numbers without a trailing ".0"
     assert body["amount"] == "1000", body
     assert isinstance(body["amount"], str), body
+    assert isinstance(body["user_balance_id"], int), body
     return json.dumps(body, sort_keys=True)
+
+
+def _digital_placed_reply():
+    """``{name: digital-option-placed, msg: {id}, status: 2000}`` is accepted."""
+    import logging
+    from iq_option_api.trading.orders import OrderManager
+    from iq_option_api.models import (
+        Direction, Expiration, Instrument, InstrumentType, OrderState,
+    )
+
+    def responder(frame):
+        msg = frame.get("msg") or {}
+        if msg.get("name") != "digital-options.place-digital-option":
+            return []
+        # exactly the captured reply: no envelope request_id echoed
+        return [{"name": "digital-option-placed",
+                 "msg": {"id": 21129472398},
+                 "status": 2000}]
+
+    ws = FakeGateway(responder)
+    om = OrderManager(ws, logger=logging.getLogger("o"))
+    inst = Instrument(instrument_id="do1861A20260812D052000T1MCSPT",
+                      asset_id=1861, instrument_type=InstrumentType.DIGITAL,
+                      direction=Direction.CALL,
+                      expiration=Expiration(timestamp=1700000060, period=60))
+    order = om.create(instrument=inst, direction=Direction.CALL,
+                      amount=1000.0, balance_id=1248546858)
+
+    from iq_option_api.trading.option_events import digital_matcher
+    order = om.submit(order, "digital-options.place-digital-option",
+                      {"user_balance_id": 1248546858,
+                       "instrument_id": inst.instrument_id,
+                       "amount": "1000"},
+                      version="3.0",
+                      matcher=digital_matcher(instrument_id=inst.instrument_id,
+                                              balance_id=1248546858))
+    assert order.order_id == 21129472398, order.order_id
+    assert order.state is OrderState.FILLED, order.state
+    return f"id={order.order_id} state={order.state.value}"
+
+
+def _numeric_status_2000():
+    from iq_option_api.models import Order, OrderState
+    ok = Order.from_payload({"id": 1, "status": 2000})
+    assert ok.state is OrderState.FILLED, ok.state
+    bad = Order.from_payload({"id": 2, "status": 4000})
+    assert bad.state is OrderState.REJECTED, bad.state
+    # string statuses must keep working
+    named = Order.from_payload({"id": 3, "status": "rejected"})
+    assert named.state is OrderState.REJECTED, named.state
+    return "2xxx = accepted, others rejected"
+
+
+def _positions_scoped_to_balance():
+    """get-positions v4.0 must carry user_balance_id (item 4 of the spec)."""
+    import logging
+    from iq_option_api.trading.positions import PositionManager
+    from iq_option_api.models import InstrumentType
+
+    seen = {}
+
+    class _WS(FakeGateway):
+        def call(self, microservice, body, **kw):
+            seen.update(microservice=microservice, body=body,
+                        version=kw.get("version"))
+            return {"positions": []}
+
+        def subscribe(self, event_name, *, params=None, callback=None,
+                      version=None, send_frame=True):
+            seen.setdefault("subs", []).append((event_name, params, version))
+            return type("S", (), {"subscription_id": "s1"})()
+
+    pm = PositionManager(_WS(lambda f: []), logger=logging.getLogger("p"))
+    pm.bind_account(balance_id=1248546858, user_id=194902949)
+
+    # even with no explicit id, the bound balance is used
+    pm.refresh(instrument_types=[InstrumentType.BLITZ])
+    assert seen["microservice"] == "portfolio.get-positions", seen
+    assert seen["version"] == "4.0", seen["version"]
+    assert seen["body"]["user_balance_id"] == 1248546858, seen["body"]
+    assert seen["body"]["instrument_types"] == ["blitz-option"], seen["body"]
+
+    # the subscription routes on user_id + user_balance_id + instrument_type
+    pm.subscribe(instrument_types=[InstrumentType.BLITZ])
+    event, params, version = seen["subs"][0]
+    assert event == "portfolio.position-changed", event
+    assert version == "3.0", version
+    assert params == {"instrument_type": "blitz-option",
+                      "user_id": 194902949,
+                      "user_balance_id": 1248546858}, params
+    return "get-positions v4.0 + position-changed v3.0 scoped by balance"
+
+
+def _live_candle_fields():
+    """candle-generated carries ask/bid alongside open/close/min/max."""
+    from iq_option_api.models import Candle
+
+    candle = Candle.from_payload({
+        "active_id": 1, "size": 60, "from": 1658359430, "to": 1658359431,
+        "id": 147437049, "open": 0.882379, "close": 0.882500,
+        "min": 0.882300, "max": 0.882600,
+        "ask": 0.88251, "bid": 0.882490, "volume": 0, "phase": "T",
+    })
+    assert candle.open == 0.882379 and candle.close == 0.882500, candle
+    assert candle.high == 0.882600 and candle.low == 0.882300, candle
+    assert candle.ask == 0.88251 and candle.bid == 0.882490, candle
+    assert candle.phase == "T", candle.phase
+    assert abs(candle.spread - (0.88251 - 0.882490)) < 1e-12, candle.spread
+    # historical rows have no book - must not blow up
+    assert Candle.from_payload({"active_id": 1, "close": 1.0}).spread is None
+    return "open/close/min/max/ask/bid/phase all mapped"
 
 
 def _blitz_body():
@@ -714,6 +826,10 @@ def _closed_market_is_detected():
 
 check("binary/turbo body matches the v1.0 contract", _binary_body)
 check("digital body matches the v3.0 contract", _digital_body)
+check("digital-option-placed reply accepted", _digital_placed_reply)
+check("numeric status 2000 means accepted", _numeric_status_2000)
+check("positions scoped by user_balance_id", _positions_scoped_to_balance)
+check("live candle exposes ask/bid", _live_candle_fields)
 check("blitz body goes out on the binary channel", _blitz_body)
 check("blitz durations parsed from init data", _blitz_durations_from_dict)
 check("closed markets are detected before ordering", _closed_market_is_detected)

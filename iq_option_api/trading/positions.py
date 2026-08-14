@@ -39,6 +39,26 @@ class PositionManager:
         self._listeners: List[Callable[[Position], None]] = []
         self._subscriptions: List[Any] = []
         self._settled_events: Dict[int, threading.Event] = {}
+        # Remembered from subscribe()/refresh() so the internal polling
+        # fallbacks stay scoped to the account that placed the order.
+        self._balance_id: Optional[int] = None
+        self._user_id: Optional[int] = None
+
+    # ==================================================================
+    # Account binding
+    # ==================================================================
+    def bind_account(self, *, balance_id: Optional[int] = None,
+                     user_id: Optional[int] = None) -> None:
+        """Remember the active account so queries stay scoped to it.
+
+        ``portfolio.get-positions`` and ``portfolio.position-changed`` are both
+        filtered by ``user_balance_id``; binding it here means result polling
+        keeps working even when no subscription was opened.
+        """
+        if balance_id is not None:
+            self._balance_id = int(balance_id)
+        if user_id is not None:
+            self._user_id = int(user_id)
 
     # ==================================================================
     # Streaming
@@ -47,9 +67,16 @@ class PositionManager:
                   balance_id: Optional[int] = None,
                   instrument_types: Optional[List[InstrumentType]] = None,
                   callback: Optional[Callable[[Position], None]] = None) -> List[Any]:
-        """Subscribe to ``portfolio.position-changed`` with routing filters."""
+        """Subscribe to ``portfolio.position-changed`` with routing filters.
+
+        The captured subscription is v3.0 and routes on
+        ``user_id`` + ``user_balance_id`` + ``instrument_type``.
+        """
         if callback:
             self._listeners.append(callback)
+        self.bind_account(balance_id=balance_id, user_id=user_id)
+        balance_id = balance_id if balance_id is not None else self._balance_id
+        user_id = user_id if user_id is not None else self._user_id
 
         types = instrument_types or [
             InstrumentType.BINARY, InstrumentType.TURBO, InstrumentType.DIGITAL,
@@ -136,9 +163,15 @@ class PositionManager:
             InstrumentType.BINARY, InstrumentType.TURBO, InstrumentType.DIGITAL,
             InstrumentType.BLITZ, InstrumentType.FOREX, InstrumentType.CFD,
             InstrumentType.CRYPTO])]
+        # ``portfolio.get-positions`` v4.0 is scoped by balance.  Fall back to
+        # the id the subscription was opened with so the internal polling in
+        # wait_for_close()/close() does not silently query another account.
+        if user_balance_id is None:
+            user_balance_id = self._balance_id
         body: Dict[str, Any] = {"instrument_types": types, "limit": limit, "offset": offset}
         if user_balance_id is not None:
             body["user_balance_id"] = int(user_balance_id)
+            self._balance_id = int(user_balance_id)
 
         payload = self.ws.call(MS_PORTFOLIO_POSITIONS, body, version="4.0", timeout=timeout)
         items = payload.get("positions", []) if isinstance(payload, dict) else []

@@ -281,7 +281,13 @@ class BlitzOptions:
         order_id = order.order_id if isinstance(order, Order) else int(order)
         position = self.position_of(order_id)
         if position is None:
-            self.positions.refresh(instrument_types=[InstrumentType.BLITZ])
+            # ``portfolio.get-positions`` v4.0 is scoped by balance: without
+            # ``user_balance_id`` the gateway answers for the wrong account
+            # (or not at all), so a blitz position placed on PRACTICE would
+            # never be found.
+            self.positions.refresh(instrument_types=[InstrumentType.BLITZ],
+                                   user_balance_id=self.accounts.active_balance_id,
+                                   limit=30)
             position = self.positions.by_order_id(order_id)
         if position is None:
             raise OrderError(f"no blitz position for order {order_id}")

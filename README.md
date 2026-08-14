@@ -173,8 +173,23 @@ Reconnect হলে subscription গুলো নিজে থেকেই resub
 broadcast করে (`digital-option-placed` / `option-opened` / `option-rejected`) — সেগুলো
 `trading/option_events.py`-এর matcher দিয়ে correlate হয়, তাই আর timeout-এ ঝুলে থাকে না।
 
+### লগ থেকে ভেরিফাই করা ইভেন্ট ও সাবস্ক্রিপশন
+
+| কী | নাম / ভার্সন | নোট |
+|---|---|---|
+| Digital placement | `digital-options.place-digital-option` v3.0 | body ঠিক ৩টা ফিল্ড: `user_balance_id`, `instrument_id`, string `amount` |
+| Digital reply | `digital-option-placed` → `{id}`, `status: 2000` | numeric `2xxx` = accepted; request_id echo না করলেও correlate হয় |
+| Digital price | `digital-option-client-price-generated` | `prices[].strike` + `call/put.symbol` → সরাসরি `instrument_id` |
+| Position stream | `portfolio.position-changed` v3.0 | routingFilters: `user_id` + `user_balance_id` + `instrument_type` |
+| Position query | `portfolio.get-positions` v4.0 | `user_balance_id` + `instrument_types` + `offset`/`limit` |
+| Live candle | `candle-generated` | `open`/`close`/`min`/`max` + `ask`/`bid`/`phase` |
+
+`Candle`-এ এখন `ask`, `bid`, `phase` আর `spread` প্রপার্টি আছে (হিস্টোরিক্যাল ক্যান্ডেলে `None`)।
+অ্যাকাউন্ট সিলেক্ট করলেই `PositionManager` সেই `user_balance_id`-তে bind হয়ে যায়, তাই রেজাল্ট
+পোলিং কখনো অন্য ব্যালেন্স থেকে পজিশন পড়ে না।
+
 অফলাইনে সব ফিক্স যাচাই:
 
 ```bash
-python3 tools/offline_check.py     # 21 checks, কোনো credential লাগে না
+python3 tools/offline_check.py     # 25 checks, কোনো credential লাগে না
 ```
