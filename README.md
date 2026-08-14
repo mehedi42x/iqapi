@@ -27,22 +27,20 @@ IQ Option-এর জন্য একটি সম্পূর্ণ **modular tr
 ## pip install (`iqapi`)
 
 The whole project is one pip-installable distribution named **`iqapi`**. It
-ships two importable packages — `iqoptionapi` (the bot-facing facade) and
-`bot` (the live trader) — and provides a `bot` console command.
+ships three importable packages — `iq_option_api` (the bundled layered
+engine), `iqoptionapi` (the bot-facing facade), and `bot` (the live trader) —
+and provides a `bot` console command. No separate `iq_option_api` package is
+needed from PyPI.
 
 ```bash
-# 1) the layered websocket engine is NOT bundled here and is not on PyPI —
-#    install it from your own source/index first:
-pip install -e /path/to/iq_option_api
-
-# 2) install this project (editable keeps everything in the repo):
+# 1) install this project (editable keeps everything in the repo):
 pip install -e .          # or:  pip install .
 
-# 3) scaffold the writable runtime dir (creates ~/.iqapi/.env, logs, data):
+# 2) scaffold the writable runtime dir (creates ~/.iqapi/.env, logs, data):
 bot --init
 # then edit ~/.iqapi/.env  →  IQ_EMAIL / IQ_PASSWORD
 
-# 4) run it — from the repo root, or cd into bot/ and run the same thing
+# 3) run it — from the repo root, or cd into bot/ and run the same thing
 bot --list                # installed strategies
 bot --dry-run             # signals only
 bot --strategy digital_ai --asset XAUUSD

@@ -14,9 +14,10 @@ iqoptionapi/
 └── data.py      ← timeframe set সহ সকল data লেনদেন (candles, ticks, price)
 ```
 
-ভেতরে সব কাজ করে আগের layered engine (`iq_option_api/`) — connection,
-Cloudflare/TLS, reconnect, request correlation সব ওখানেই। এই `iqoptionapi/`
-প্যাকেজটা তার উপরে বসানো পাতলা, বট-বান্ধব চেহারা।
+ভেতরে সব কাজ করে bundled layered engine (`iq_option_api/`) — connection,
+Cloudflare/TLS, reconnect, request correlation সব ওখানেই। `pip install .`
+দুটোকেই একসাথে install করে। এই `iqoptionapi/` প্যাকেজটা তার উপরে বসানো
+পাতলা, বট-বান্ধব চেহারা।
 
 ## Quick start
 

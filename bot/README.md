@@ -30,7 +30,7 @@ bot/
 রিপোর রুট থেকে install + run:
 
 ```bash
-pip install -e .            # installs `iqoptionapi` + `bot` + the `bot` command
+pip install -e .            # installs bundled engine + `iqoptionapi` + `bot` command
 bot --init                  # creates ~/.iqapi/.env (or bot/.env), logs, data
 # edit the generated .env  →  IQ_EMAIL / IQ_PASSWORD
 

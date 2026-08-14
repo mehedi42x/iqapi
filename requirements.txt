@@ -4,7 +4,5 @@ websocket-client>=1.6.0
 requests>=2.28.0
 curl_cffi>=0.7.0
 
-# The layered websocket engine (IQOptionClient) that iqoptionapi/ and bot/ run
-# on.  This package is NOT on PyPI — install it from your own source/index
-# first, e.g.  pip install -e /path/to/iq_option_api
-iq_option_api
+# iq_option_api is bundled in this repository/distribution; it is not an
+# external PyPI dependency.
