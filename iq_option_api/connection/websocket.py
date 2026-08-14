@@ -70,6 +70,7 @@ class WebSocketClient:
 
         self._ws: Any = None
         self._app: Any = None
+        self._connected_url: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._state = ConnectionState.DISCONNECTED
@@ -119,7 +120,7 @@ class WebSocketClient:
         return {
             "state": self.state.value,
             "connected": self.is_connected,
-            "url": self.config.websocket_url,
+            "url": self._connected_url or self.config.websocket_url,
             "messages_sent": self.messages_sent,
             "messages_received": self.messages_received,
             "pending_requests": self.requests.pending_count,
@@ -143,46 +144,81 @@ class WebSocketClient:
 
         timeout = timeout or self.config.connect_timeout
         self._closed_by_user = False
-        self._connected_event.clear()
         self._set_state(ConnectionState.CONNECTING)
 
-        headers = [f"User-Agent: {self.config.user_agent}"]
-        self._app = _ws.WebSocketApp(
-            self.config.websocket_url,
-            header=headers,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close,
-        )
-
+        # Headers that make the handshake look like the real web client.
+        # Cloudflare drops requests that advertise a bot UA.  Origin is passed
+        # to run_forever() via the ``origin`` kwarg (the library sets the header).
+        headers: List[str] = [
+            f"User-Agent: {self.config.user_agent}",
+            "Accept-Language: en-US,en;q=0.9",
+            "Cache-Control: no-cache",
+            "Pragma: no-cache",
+        ]
         sslopt = None if self.config.enable_ssl else {"cert_reqs": ssl.CERT_NONE}
         proxy_kwargs: Dict[str, Any] = {}
         if self.config.proxy:
             host, _, port = self.config.proxy.replace("http://", "").replace("https://", "").partition(":")
             proxy_kwargs = {"http_proxy_host": host, "http_proxy_port": int(port or 8080)}
+        subprotocols = list(self.config.subprotocols) or None
 
-        def _run() -> None:
-            try:
-                self._app.run_forever(
-                    sslopt=sslopt,
-                    ping_interval=int(self.config.ping_interval),
-                    ping_timeout=int(self.config.ping_timeout),
-                    **proxy_kwargs,
-                )
-            except Exception as exc:  # pragma: no cover - transport level
-                self.last_error = str(exc)
-                self.log.error("websocket loop crashed: %s", exc)
-            finally:
-                self._handle_disconnect()
+        urls = self.config.websocket_urls
+        last_error: Optional[str] = None
+        connected_url: Optional[str] = None
 
-        self._thread = threading.Thread(target=_run, name="iq-ws-reader", daemon=True)
-        self._thread.start()
+        for url in urls:
+            if self._closed_by_user:
+                break
+            self._connected_event.clear()
+            self._app = _ws.WebSocketApp(
+                url,
+                header=headers,
+                on_open=self._on_open,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close,
+            )
 
-        if not self._connected_event.wait(timeout):
+            def _run(app: Any = self._app, run_url: str = url) -> None:
+                try:
+                    app.run_forever(
+                        sslopt=sslopt,
+                        ping_interval=int(self.config.ping_interval),
+                        ping_timeout=int(self.config.ping_timeout),
+                        origin=self.config.origin_header,
+                        subprotocols=subprotocols,
+                        **proxy_kwargs,
+                    )
+                except Exception as exc:  # pragma: no cover - transport level
+                    self.last_error = str(exc)
+                    self.log.error("websocket loop crashed (%s): %s", run_url, exc)
+                finally:
+                    self._handle_disconnect()
+
+            self._thread = threading.Thread(target=_run, name="iq-ws-reader", daemon=True)
+            self._thread.start()
+
+            if self._connected_event.wait(timeout):
+                connected_url = url
+                break
+
+            # This host did not answer in time — tear it down and try the next.
+            last_error = f"connection to {url} timed out after {timeout}s"
+            self.log.warning("%s", last_error)
+            self.close()
+            # Let the reader thread unwind (it sees _closed_by_user=True and
+            # exits cleanly), then arm the flag again for the next host.
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=2.0)
+            self._closed_by_user = False
+            self._set_state(ConnectionState.CONNECTING)
+
+        if connected_url is None:
             self._set_state(ConnectionState.FAILED)
             self.close()
-            raise IQConnectionError(f"connection to {self.config.websocket_url} timed out after {timeout}s")
+            raise IQConnectionError(
+                f"could not connect to any websocket endpoint "
+                f"({', '.join(urls)}): {last_error or 'timed out'}")
 
         self._start_heartbeat()
         return True
@@ -210,7 +246,9 @@ class WebSocketClient:
         self._last_message_at = time.time()
         self._set_state(ConnectionState.CONNECTED)
         self._connected_event.set()
-        self.log.info("websocket connected to %s", self.config.websocket_url)
+        url = getattr(app, "url", None) or self.config.websocket_url
+        self._connected_url = url
+        self.log.info("websocket connected to %s", url)
         try:
             self.send_frame(build_message(FRAME_SET_OPTIONS, {"sendResults": True}),
                             request_id=self.protocol.next_request_id())
