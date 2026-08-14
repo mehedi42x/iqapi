@@ -76,14 +76,22 @@ class OrderManager:
     # Submission
     # ==================================================================
     def submit(self, order: Order, microservice: str, body: Dict[str, Any],
-               *, version: str = "1.0", timeout: Optional[float] = None) -> Order:
-        """Send an order and merge the server reply back into the model."""
+               *, version: str = "1.0", timeout: Optional[float] = None,
+               matcher: Optional[Callable[[Dict[str, Any]], bool]] = None) -> Order:
+        """Send an order and merge the server reply back into the model.
+
+        ``matcher`` is an optional fallback correlator: option microservices
+        sometimes answer by *broadcasting* ``option-opened`` / ``option-rejected``
+        without echoing our ``request_id``, and without it the call would sit
+        there until the request timeout fired.
+        """
         self.log.info("placing %s order: %s %s amount=%s balance=%s",
                       order.instrument_type.value, order.symbol or order.asset_id,
                       order.direction.value if order.direction else "?",
                       order.amount, order.balance_id)
         try:
-            payload = self.ws.call(microservice, body, version=version, timeout=timeout)
+            payload = self.ws.call(microservice, body, version=version,
+                                   timeout=timeout, matcher=matcher)
         except Exception as exc:
             order.state = OrderState.REJECTED
             order.message = str(exc)

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..connection.protocol import MS_MARGINAL_INSTRUMENTS
 from ..connection.websocket import WebSocketClient
@@ -23,10 +23,72 @@ BINARY_PERIODS = (60, 120, 180, 300, 600, 900, 1800, 3600, 14400, 86400)
 BLITZ_DURATIONS = (5, 10, 15, 30, 60)
 
 
+def expiration_candidates(now: Optional[float] = None, *,
+                          quarters: int = 50) -> List[float]:
+    """The expiry timestamps the platform actually offers, in platform order.
+
+    IQ Option does not accept an arbitrary ``now + duration`` timestamp: an
+    option expires either on one of the next **five whole minutes** (turbo) or
+    on a **quarter-hour mark at least five minutes away** (binary).  Sending
+    anything else is silently dropped by ``binary-options.open-option``, which
+    looks like a lost reply on our side.
+
+    The first five entries are therefore the turbo ladder and the rest are the
+    binary ladder — the index of the chosen entry is what tells the two apart.
+    """
+    now = float(now or time.time())
+    # Nearest whole minute.  Inside the last 30 seconds of a minute the next
+    # minute is too close to be accepted, so the ladder starts one later.
+    minute = now - (now % 60)
+    start = minute + 60 if (minute + 60 - now) > 30 else minute + 120
+
+    candidates = [start + index * 60 for index in range(5)]
+
+    # Quarter-hour marks, at least five minutes out.
+    mark = minute
+    found = 0
+    while found < quarters:
+        mark += 60
+        if int(mark) % 900 == 0 and (mark - now) > 300:
+            candidates.append(mark)
+            found += 1
+    return [float(int(ts)) for ts in candidates]
+
+
+TURBO_LADDER = 5   # candidates [0:5] are the 1-5 minute turbo expiries
+
+
+def expiration_for(duration: int, *, now: Optional[float] = None,
+                   ladder: Optional[str] = None) -> Tuple[float, int]:
+    """Pick the offered expiry closest to ``duration`` **minutes**.
+
+    Returns ``(timestamp, index)``.  ``index < 5`` means the expiry sits on the
+    turbo ladder, anything above is a binary (quarter-hour) expiry.  Pass
+    ``ladder="turbo"`` or ``ladder="binary"`` to constrain the search — a turbo
+    order priced against a quarter-hour expiry (or the reverse) is rejected.
+    """
+    now = float(now or time.time())
+    candidates = expiration_candidates(now)
+    if ladder == "turbo":
+        choices = range(0, TURBO_LADDER)
+    elif ladder == "binary":
+        choices = range(TURBO_LADDER, len(candidates))
+    else:
+        choices = range(len(candidates))
+    target = float(duration) * 60.0
+    index = min(choices, key=lambda i: abs((candidates[i] - now) - target))
+    return candidates[index], index
+
+
 def next_expiration(period: int, *, now: Optional[float] = None,
                     min_lead: float = 5.0) -> float:
     """Next aligned expiration timestamp for an option of ``period`` seconds."""
     now = now or time.time()
+    if period >= 60:
+        # Snap onto the ladder the platform publishes rather than guessing.
+        timestamp, _ = expiration_for(max(1, int(round(period / 60.0))), now=now)
+        if timestamp - now >= min_lead:
+            return timestamp
     if period >= 3600:
         base = now - (now % period)
         expiry = base + period
@@ -148,10 +210,33 @@ class InstrumentRegistry:
     def option_expirations(period: int, count: int = 5) -> List[Expiration]:
         return expiration_list(period, count)
 
-    @staticmethod
-    def next_expiration(period: int, *, min_lead: float = 5.0) -> Expiration:
-        ts = next_expiration(period, min_lead=min_lead)
+    def next_expiration(self, period: int, *, min_lead: float = 5.0,
+                        now: Optional[float] = None) -> Expiration:
+        now = now if now is not None else self._now()
+        ts = next_expiration(period, now=now, min_lead=min_lead)
         return Expiration(timestamp=ts, period=period, index=0)
+
+    def expiration_for(self, duration_minutes: int, *,
+                       now: Optional[float] = None,
+                       ladder: Optional[str] = None) -> Expiration:
+        """Platform-aligned expiry for ``duration_minutes``, with its ladder index.
+
+        ``Expiration.index < 5`` marks a turbo-ladder expiry.  Always computed
+        against **server** time — a client clock that drifts by a few seconds
+        is enough to pick an expiry the gateway refuses.
+        """
+        now = now if now is not None else self._now()
+        timestamp, index = expiration_for(duration_minutes, now=now, ladder=ladder)
+        return Expiration(timestamp=timestamp,
+                          period=int(duration_minutes) * 60, index=index)
+
+    def _now(self) -> float:
+        """Server time when we have it, wall clock otherwise."""
+        try:
+            server = float(getattr(self.ws, "server_time", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            server = 0.0
+        return server if server > 0 else time.time()
 
     # ==================================================================
     # Generic

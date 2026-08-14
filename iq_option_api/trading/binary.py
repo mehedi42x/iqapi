@@ -14,11 +14,15 @@ import time
 from typing import Any, Dict, List, Optional
 
 from ..account import AccountManager
-from ..connection.protocol import MS_BINARY_OPEN
+from ..connection.protocol import (
+    MS_BINARY_OPEN,
+    OPTION_TYPE_BINARY,
+    OPTION_TYPE_TURBO,
+)
 from ..connection.websocket import WebSocketClient
 from ..exceptions import AssetError, InstrumentError, MarketError, OrderError
 from ..market import MarketManager
-from ..market.instruments import BINARY_PERIODS, next_expiration
+from ..market.instruments import BINARY_PERIODS
 from ..models import (
     Asset,
     Direction,
@@ -29,6 +33,7 @@ from ..models import (
     Position,
     TradeResult,
 )
+from .option_events import option_matcher
 from .orders import OrderManager
 from .positions import PositionManager
 
@@ -89,9 +94,14 @@ class BinaryOptions:
         asset_obj = self.get_asset(asset, turbo=turbo)
 
         if expiration_timestamp is None:
-            expiration_timestamp = next_expiration(expiration_period)
-        expiration = Expiration(timestamp=float(expiration_timestamp),
-                                period=expiration_period)
+            # Snap onto the ladder the platform publishes, using server time:
+            # an unaligned ``expired`` is dropped without a reply.
+            expiration = self.market.instruments.expiration_for(
+                max(1, int(round(expiration_period / 60.0))),
+                ladder="turbo" if turbo else "binary")
+        else:
+            expiration = Expiration(timestamp=float(expiration_timestamp),
+                                    period=expiration_period)
 
         return Instrument(
             instrument_id=f"{asset_obj.asset_id}:{int(expiration.timestamp)}:{direction.value}",
@@ -101,6 +111,7 @@ class BinaryOptions:
             expiration=expiration,
             direction=direction,
             payout=self.payout(asset_obj, turbo=turbo),
+            index=expiration.index,
             min_amount=asset_obj.minimal_amount,
             max_amount=asset_obj.maximal_amount,
         )
@@ -158,15 +169,26 @@ class BinaryOptions:
                                    amount=amount, balance_id=balance_id)
         self.orders.validate(order, balance=self._balance())
 
+        # ``binary-options.open-option`` v1.0 wire body.  ``option_type_id``
+        # replaces the old ``type`` string: 3 = turbo (expiry on the 1-5 minute
+        # ladder), 1 = binary (expiry on a quarter-hour mark).
         body = {
             "price": float(amount),
-            "active_id": instrument.asset_id,
-            "direction": direction.value,
+            "active_id": int(instrument.asset_id),
             "expired": int(instrument.expiration.timestamp),
-            "type": "turbo" if turbo else "binary",
-            "user_balance_id": balance_id,
+            "direction": direction.value.lower(),
+            "option_type_id": OPTION_TYPE_TURBO if turbo else OPTION_TYPE_BINARY,
+            "user_balance_id": int(balance_id),
         }
-        return self.orders.submit(order, MS_BINARY_OPEN, body, version="3.0", timeout=timeout)
+        # Safety net: if the gateway answers only by broadcasting
+        # ``option-opened`` / ``option-rejected`` instead of echoing our
+        # request_id, match it on the order's own fields.
+        matcher = option_matcher(active_id=body["active_id"],
+                                 expired=body["expired"],
+                                 direction=body["direction"],
+                                 balance_id=body["user_balance_id"])
+        return self.orders.submit(order, MS_BINARY_OPEN, body, version="1.0",
+                                  timeout=timeout, matcher=matcher)
 
     def call(self, asset: "str | int", amount: float, *, duration: int = 1,
              **kwargs: Any) -> Order:

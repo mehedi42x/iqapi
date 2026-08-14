@@ -47,6 +47,7 @@ from .protocol import (
     FRAME_SUBSCRIBE,
     FRAME_TIME_SYNC,
     FRAME_UNSUBSCRIBE,
+    OPTION_RESULT_EVENTS,
     Protocol,
     RequestRegistry,
     build_message,
@@ -451,13 +452,39 @@ class WebSocketClient:
 
         if request_id is not None and self.requests.resolve(str(request_id), frame):
             return
+
+        event_name = self.protocol.event_name(frame)
+
+        # Order lifecycle events.  ``binary-options.open-option`` /
+        # ``blitz-options.open-option`` normally answer with an ``option``
+        # frame that echoes ``request_id`` in the *envelope*, but several
+        # gateways only put it inside ``msg`` — and the rejection path
+        # (``option-rejected``) is broadcast as a plain event.  Correlate on
+        # the nested id before falling through to the subscription bus so a
+        # blocked ``submit()`` is released either way.
+        if event_name in OPTION_RESULT_EVENTS or outer in OPTION_RESULT_EVENTS:
+            nested = self._nested_request_id(frame, payload)
+            if nested is not None and self.requests.resolve(nested, frame):
+                return
+
         if self.requests.try_match(frame):
             return
 
-        event_name = self.protocol.event_name(frame)
         self.subscriptions.dispatch(event_name, payload, frame)
         if event_name != outer:
             self.subscriptions.dispatch(outer, payload, frame)
+
+    @staticmethod
+    def _nested_request_id(frame: Dict[str, Any], payload: Any) -> Optional[str]:
+        """Dig a ``request_id`` out of an event that carries it inside ``msg``."""
+        for source in (payload, frame.get("msg"), frame):
+            if not isinstance(source, dict):
+                continue
+            for key in ("request_id", "requestId"):
+                value = source.get(key)
+                if value not in (None, ""):
+                    return str(value)
+        return None
 
     def add_raw_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
         self._raw_listeners.append(listener)
@@ -534,7 +561,8 @@ class WebSocketClient:
 
     def call(self, microservice: str, body: Any, *,
              version: str = "1.0", timeout: Optional[float] = None,
-             raw: bool = False) -> Any:
+             raw: bool = False,
+             matcher: Optional[Callable[[Dict[str, Any]], bool]] = None) -> Any:
         """Invoke a microservice through ``sendMessage`` and await the reply.
 
         The platform's microservice gateway requires every ``body`` to be a
@@ -546,7 +574,8 @@ class WebSocketClient:
         if body is None or body == "":
             body = {}
         msg = build_microservice_call(microservice, body, version=version)
-        return self.send_request(FRAME_SEND_MESSAGE, msg, timeout=timeout, raw=raw)
+        return self.send_request(FRAME_SEND_MESSAGE, msg, timeout=timeout,
+                                 raw=raw, matcher=matcher)
 
     def wait_for(self, event_name: str, *,
                  params: Optional[Dict[str, Any]] = None,
