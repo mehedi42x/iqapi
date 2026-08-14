@@ -69,11 +69,18 @@ def asset_name_of(asset_id: int) -> Optional[str]:
 class AssetCatalog:
     """Discovers assets per instrument type and answers id/name questions."""
 
+    #: Market schedules and payouts move during the day, so the catalog is
+    #: only trusted for this long.  An indefinitely cached "market open" flag
+    #: is what let orders be sent into markets that had since closed.
+    CACHE_TTL = 60.0
+
     def __init__(self, client: WebSocketClient, logger: Optional[logging.Logger] = None) -> None:
         self.ws = client
         self.log = logger or logging.getLogger("iq_option_api.assets")
         self._by_type: Dict[InstrumentType, Dict[str, Asset]] = {}
+        self._loaded_at: Dict[InstrumentType, float] = {}
         self._init_data: Dict[str, Any] = {}
+        self._init_data_at: float = 0.0
         self._lock = threading.RLock()
 
     # ==================================================================
@@ -82,14 +89,17 @@ class AssetCatalog:
     def initialization_data(self, *, refresh: bool = False,
                             timeout: Optional[float] = None) -> Dict[str, Any]:
         """``get-initialization-data`` - binary/turbo/blitz actives + payouts."""
+        import time as _time
         with self._lock:
-            if self._init_data and not refresh:
+            fresh = (_time.time() - self._init_data_at) < self.CACHE_TTL
+            if self._init_data and not refresh and fresh:
                 return self._init_data
         payload = self.ws.call(MS_INITIALIZATION_DATA, {}, version="3.0", timeout=timeout)
         if not isinstance(payload, dict):
             raise AssetError("unexpected initialization-data payload", details=payload)
         with self._lock:
             self._init_data = payload
+            self._init_data_at = _time.time()
         return payload
 
     # ==================================================================
@@ -111,9 +121,16 @@ class AssetCatalog:
             if commission is not None:
                 asset.profit_percent = 100.0 - float(commission)
             asset.is_suspended = bool(item.get("is_suspended", False))
+            # The trading ``schedule`` is authoritative.  Ignoring it is what
+            # produced "Cannot purchase an option (the asset is not available
+            # at the moment)": ``enabled`` stays true for a closed FX pair on
+            # the weekend, so the client happily sent an order the gateway
+            # then refused.
             asset.market_status = MarketStatus(
                 asset_id=asset.asset_id, name=asset.name,
-                is_open=not asset.is_suspended and bool(item.get("enabled", True)),
+                is_open=(not asset.is_suspended
+                         and bool(item.get("enabled", True))
+                         and self._schedule_is_open(asset.schedule)),
                 instrument_type=itype, schedule=asset.schedule,
             )
             assets.append(asset)
@@ -133,6 +150,22 @@ class AssetCatalog:
                 continue
             asset = Asset.from_payload({**item, "id": active_id}, instrument_type=InstrumentType.BLITZ)
             asset.name = asset.name or (asset_name_of(int(active_id)) or str(active_id))
+            option = item.get("option", {}) if isinstance(item.get("option"), dict) else {}
+            profit = option.get("profit", {}) if isinstance(option.get("profit"), dict) else {}
+            commission = profit.get("commission")
+            if commission is not None:
+                asset.profit_percent = 100.0 - float(commission)
+            asset.is_suspended = bool(item.get("is_suspended", False))
+            # Blitz used to carry no market status at all, so ``is_open`` fell
+            # back to ``is_enabled`` and was always True - orders were sent
+            # into closed markets and rejected.
+            asset.market_status = MarketStatus(
+                asset_id=asset.asset_id, name=asset.name,
+                is_open=(not asset.is_suspended
+                         and bool(item.get("enabled", True))
+                         and self._schedule_is_open(asset.schedule)),
+                instrument_type=InstrumentType.BLITZ, schedule=asset.schedule,
+            )
             assets.append(asset)
         self._store(InstrumentType.BLITZ, assets)
         return assets
@@ -192,9 +225,11 @@ class AssetCatalog:
     # Lookup
     # ==================================================================
     def all(self, instrument_type: InstrumentType, *, refresh: bool = False) -> List[Asset]:
+        import time as _time
         with self._lock:
             cached = list(self._by_type.get(instrument_type, {}).values())
-        if cached and not refresh:
+            age = _time.time() - self._loaded_at.get(instrument_type, 0.0)
+        if cached and not refresh and age < self.CACHE_TTL:
             return cached
         loader = {
             InstrumentType.BINARY: self.binary_assets,
@@ -207,12 +242,16 @@ class AssetCatalog:
         return self.marginal_assets(instrument_type)
 
     def find(self, name: str, instrument_type: Optional[InstrumentType] = None) -> Asset:
+        import time as _time
         key = name.upper()
         types = [instrument_type] if instrument_type else list(self._by_type.keys())
         for itype in types:
             with self._lock:
                 bucket = self._by_type.get(itype, {})
-            if key in bucket:
+                age = _time.time() - self._loaded_at.get(itype, 0.0)
+            # An expired entry must not be returned: its ``market_status`` is
+            # what the trade path checks before sending the order.
+            if key in bucket and age < self.CACHE_TTL:
                 return bucket[key]
         if instrument_type is not None:
             for asset in self.all(instrument_type, refresh=True):
@@ -271,5 +310,7 @@ class AssetCatalog:
         return False
 
     def _store(self, instrument_type: InstrumentType, assets: List[Asset]) -> None:
+        import time as _time
         with self._lock:
             self._by_type[instrument_type] = {a.name.upper(): a for a in assets if a.name}
+            self._loaded_at[instrument_type] = _time.time()

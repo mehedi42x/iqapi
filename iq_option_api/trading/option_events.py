@@ -22,7 +22,13 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
 
-from ..connection.protocol import OPTION_RESULT_EVENTS
+from ..connection.protocol import (
+    EVENT_DIGITAL_PLACED,
+    EVENT_DIGITAL_REJECTED,
+    OPTION_RESULT_EVENTS,
+)
+
+DIGITAL_RESULT_EVENTS = (EVENT_DIGITAL_PLACED, EVENT_DIGITAL_REJECTED)
 
 
 def _unwrap(frame: Dict[str, Any]) -> Dict[str, Any]:
@@ -55,19 +61,34 @@ def option_matcher(*, request_id: Optional[str] = None,
                    active_id: Optional[int] = None,
                    expired: Optional[int] = None,
                    direction: Optional[str] = None,
-                   balance_id: Optional[int] = None) -> Callable[[Dict[str, Any]], bool]:
+                   balance_id: Optional[int] = None,
+                   instrument_id: Optional[str] = None,
+                   events: Optional[tuple] = None) -> Callable[[Dict[str, Any]], bool]:
     """Predicate matching the broadcast that answers one open-option request.
 
     Matching is deliberately conservative: a frame is only accepted when it is
     one of the option lifecycle events *and* it either echoes our
     ``request_id`` or agrees on every order field we know about (asset, expiry,
-    direction, balance).  That keeps a concurrent order placed from another
-    session - or from another thread - from stealing this reply.
+    direction, balance, instrument).  That keeps a concurrent order placed from
+    another session - or from another thread - from stealing this reply.
+
+    ``instrument_id`` is what digital placement correlates on: the digital body
+    carries no ``active_id``/``expired``, only the strike symbol, and
+    ``digital-option-placed`` echoes it back.  ``events`` narrows the accepted
+    event names (e.g. only the digital pair) so a binary broadcast arriving at
+    the same moment cannot resolve a digital order.
     """
     wanted_direction = direction.lower() if isinstance(direction, str) else None
+    wanted_instrument = str(instrument_id) if instrument_id else None
+    accepted = set(events) if events else None
 
     def _matches(frame: Dict[str, Any]) -> bool:
-        if not isinstance(frame, dict) or not is_option_event(frame):
+        if not isinstance(frame, dict):
+            return False
+        if accepted is not None:
+            if not (_frame_names(frame) & accepted):
+                return False
+        elif not is_option_event(frame):
             return False
 
         data = _unwrap(frame)
@@ -103,14 +124,71 @@ def option_matcher(*, request_id: Optional[str] = None,
             except (TypeError, ValueError):
                 return False
 
+        if wanted_instrument is not None:
+            found = _first(data, ("instrument_id", "instrumentId", "symbol"))
+            if found is not None:
+                compared += 1
+                if str(found) != wanted_instrument:
+                    return False
+
         if wanted_direction is not None:
-            found = _first(data, ("direction", "dir"))
+            found = _first(data, ("direction", "dir", "instrument_dir"))
             if found is not None:
                 compared += 1
                 if str(found).lower() != wanted_direction:
                     return False
 
         return compared > 0
+
+    return _matches
+
+
+def digital_matcher(*, instrument_id: Optional[str] = None,
+                    balance_id: Optional[int] = None,
+                    request_id: Optional[str] = None) -> Callable[[Dict[str, Any]], bool]:
+    """Broadcast correlator for ``digital-options.place-digital-option``.
+
+    The gateway answers with ``{"name": "digital-option-placed",
+    "msg": {"id": 21129472398}}`` - frequently *without* echoing the envelope
+    ``request_id``.  A ``digital-option-placed`` frame that carries an id and
+    does not contradict our instrument/balance therefore answers our request:
+    digital placement is serialised per call site, so there is no other
+    in-flight digital order of ours to confuse it with.
+    """
+    wanted_instrument = str(instrument_id) if instrument_id else None
+
+    def _matches(frame: Dict[str, Any]) -> bool:
+        if not isinstance(frame, dict):
+            return False
+        if not (_frame_names(frame) & set(DIGITAL_RESULT_EVENTS)):
+            return False
+
+        data = _unwrap(frame)
+        if not isinstance(data, dict):
+            return False
+
+        if request_id is not None:
+            for source in (frame, frame.get("msg"), data):
+                if isinstance(source, dict):
+                    for key in ("request_id", "requestId"):
+                        value = source.get(key)
+                        if value not in (None, "") and str(value) == str(request_id):
+                            return True
+
+        for value, keys in ((wanted_instrument,
+                             ("instrument_id", "instrumentId", "symbol")),
+                            (balance_id, ("user_balance_id", "balance_id"))):
+            if value is None:
+                continue
+            found = _first(data, keys)
+            if found is None:
+                continue
+            if str(found) != str(value):
+                return False
+
+        # A placement reply must carry an id, a rejection must carry a reason.
+        return bool(_first(data, ("id", "order_id", "position_id"))
+                    or _first(data, ("message", "error", "reason")))
 
     return _matches
 

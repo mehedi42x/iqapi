@@ -215,11 +215,9 @@ def _digital_subscription_shape():
     class _WS(FakeGateway):
         def subscribe(self, event_name, *, params=None, callback=None,
                       version=None, send_frame=True):
-            captured["event"] = event_name
-            captured["params"] = params
-            captured["version"] = version
+            captured.setdefault("subs", []).append((event_name, params, version))
             captured["callback"] = callback
-            return type("S", (), {"subscription_id": "s1"})()
+            return type("S", (), {"subscription_id": f"s{len(captured['subs'])}"})()
 
     ws = _WS(lambda f: [])
     d = DigitalOptions.__new__(DigitalOptions)
@@ -229,16 +227,81 @@ def _digital_subscription_shape():
     d.log = logging.getLogger("d")
 
     d.subscribe_prices(1, period=300)
-    assert captured["event"] == "instrument-quotes-generated", captured["event"]
-    assert captured["params"] == {"active": 1, "expiration_period": 300,
-                                  "kind": "digital-option"}, captured["params"]
-    assert captured["version"] == "1.2" or captured["version"] == "1.0"
+    events = {e for e, _, _ in captured["subs"]}
+    # BOTH digital price streams must be subscribed: an account served only
+    # the client-price stream used to time out waiting for the other one.
+    assert events == {"instrument-quotes-generated",
+                      "digital-option-client-price-generated"}, events
+
+    by_event = {e: p for e, p, _ in captured["subs"]}
+    assert by_event["instrument-quotes-generated"] == {
+        "active": 1, "expiration_period": 300, "kind": "digital-option"}, by_event
+    assert by_event["digital-option-client-price-generated"] == {
+        "asset_id": 1, "instrument_type": "digital-option"}, by_event
 
     # a second period must get its own subscription, not reuse the first
-    captured.clear()
+    captured["subs"] = []
     d.subscribe_prices(1, period=60)
-    assert captured.get("params", {}).get("expiration_period") == 60, captured
-    return "active + expiration_period + kind, one sub per period"
+    periods = [p.get("expiration_period") for _, p, _ in captured["subs"]
+               if "expiration_period" in p]
+    assert periods == [60], captured["subs"]
+    return "both price streams subscribed, one sub set per period"
+
+
+def _digital_client_price_shape():
+    """The shape from the live log: prices[].call/put with do<id>A<date> symbols."""
+    import logging
+    from iq_option_api.trading.digital import DigitalOptions
+
+    d = DigitalOptions.__new__(DigitalOptions)
+    d._books, d._by_asset, d._subs = {}, {}, {}
+    d._lock = threading.RLock()
+    d.log = logging.getLogger("d")
+
+    book = d._ingest_price_event({"msg": {
+        "asset_id": 1861,
+        "digital_option_trading_group_id": "191_0",
+        "instrument_index": 835766,
+        "prices": [
+            {"strike": "1.153067",
+             "call": {"symbol": "do1861A20260812D052000T1MC1F153067", "bid": 65},
+             "put": {"symbol": "do1861A20260812D052000T1MP1F153067", "bid": 33}},
+            {"strike": "SPT",
+             "call": {"symbol": "do1861A20260812D052000T1MCSPT", "bid": 50}},
+        ]}})
+
+    assert book is not None, "client-price frame was not ingested"
+    assert book["asset_id"] == 1861, book
+    assert book["instrument_index"] == "835766", book
+    # period must be decoded from the symbol (T1M -> 60s) when absent
+    assert book["period"] == 60, book["period"]
+
+    strike = book["strikes"]["1.153067"]
+    assert strike.instrument_id_call == "do1861A20260812D052000T1MC1F153067"
+    assert strike.instrument_id_put == "do1861A20260812D052000T1MP1F153067"
+    assert abs(strike.value - 1.153067) < 1e-9, strike.value
+    assert book["strikes"]["SPT"].instrument_id_call.endswith("CSPT")
+    return f"{len(book['strikes'])} strikes parsed from prices[].call/put"
+
+
+def _digital_symbol_v2_parsing():
+    from iq_option_api.trading.digital import DigitalOptions
+    from iq_option_api.models import Direction
+
+    info = DigitalOptions.parse_symbol("do1861A20260812D052000T1MC1F153067")
+    assert info["asset_id"] == 1861, info
+    assert info["direction"] is Direction.CALL, info
+    assert info["strike"] == "1F153067", info
+    assert abs(DigitalOptions._strike_value("1F153067") - 1.153067) < 1e-9
+
+    put = DigitalOptions.parse_symbol("do1861A20260812D052000T1MPSPT")
+    assert put["direction"] is Direction.PUT, put
+    assert put["strike"] is None, put
+
+    # the legacy ticker format must keep working
+    old = DigitalOptions.parse_symbol("doEURUSD202401151230PT1MCSPT")
+    assert old["asset"] == "EURUSD" and old["direction"] is Direction.CALL, old
+    return "do<asset_id>A<date>D<time>T<period><C|P><strike> decoded"
 
 
 def _digital_ingest_and_instrument():
@@ -268,8 +331,39 @@ def _digital_ingest_and_instrument():
     return f"{len(book['strikes'])} strikes, ATM payout {atm.profit_call:.1f}%"
 
 
-check("subscribes to instrument-quotes-generated", _digital_subscription_shape)
+def _routing_filters_are_server_side():
+    """The bug that silently killed every filtered subscription.
+
+    ``routingFilters`` are applied by the platform.  The old local re-check
+    demanded that *every* filter key also appear in the payload, but events
+    never echo ``kind`` / ``instrument_type`` / ``expiration_period`` - so
+    every digital price frame (and every candle) was dropped before reaching
+    the callback, and the caller waited out the full timeout.
+    """
+    from iq_option_api.connection.subscription import _matches
+
+    # filters the payload does not echo must not reject the frame
+    assert _matches({"asset_id": 1861, "instrument_type": "digital-option"},
+                    {"asset_id": 1861, "instrument_index": 835766, "prices": []})
+    assert _matches({"active": 1, "expiration_period": 60, "kind": "digital-option"},
+                    {"active": 1, "expiration": {"period": 60}, "quotes": []})
+    assert _matches({"instrument_type": "blitz-option", "user_balance_id": 1248546858},
+                    {"id": 1, "instrument_type": "blitz-option"})
+
+    # a field that IS present and different still rejects
+    assert not _matches({"active": 1, "kind": "digital-option"}, {"active": 76})
+    assert not _matches({"active_id": 1, "size": 60}, {"active_id": 1, "size": 300})
+
+    # active / active_id / asset_id name the same thing
+    assert _matches({"active_id": 1861}, {"asset_id": 1861, "value": 1.1})
+    return "server-side filters no longer drop their own events"
+
+
+check("routing filters do not drop matching events", _routing_filters_are_server_side)
+check("subscribes to both digital price streams", _digital_subscription_shape)
 check("quote frame -> strike book with instrument ids", _digital_ingest_and_instrument)
+check("client-price frame -> strike book", _digital_client_price_shape)
+check("new digital symbol format decoded", _digital_symbol_v2_parsing)
 
 
 # ---------------------------------------------------------------------------
@@ -487,21 +581,142 @@ def _digital_body():
     d.log = logging.getLogger("d")
     d._lock = threading.RLock()
     d.get_instrument = lambda *a, **k: Instrument(
-        instrument_id="doEURUSD202401151230PT1MCSPT", asset_id=1,
+        instrument_id="do1861A20260812D052000T1MCSPT", asset_id=1861,
         instrument_type=InstrumentType.DIGITAL, direction=Direction.CALL,
+        index=835766,
         expiration=Expiration(timestamp=1700000060, period=60))
     d._balance = lambda: 1000.0
 
-    d.buy("EURUSD", 1.0, Direction.CALL, duration=1)
+    d.buy("EURUSD", 1000.0, Direction.CALL, duration=1)
     body = sent["body"]
     assert sent["microservice"] == "digital-options.place-digital-option", sent
-    assert set(body) == {"user_balance_id", "instrument_id", "amount"}, body
+    # place-digital-option is a v3.0 microservice - v1.0 is not routed.
+    assert sent["version"] == "3.0", sent["version"]
+    assert body["instrument_id"] == "do1861A20260812D052000T1MCSPT", body
+    assert body["instrument_index"] == 835766, body
+    assert body["asset_id"] == 1861, body
+    # amount rides as a string, whole numbers without a trailing ".0"
+    assert body["amount"] == "1000", body
     assert isinstance(body["amount"], str), body
     return json.dumps(body, sort_keys=True)
 
 
+def _blitz_body():
+    """Blitz must go out on the binary channel, not the dead blitz one."""
+    import logging
+    from iq_option_api.trading.blitz import BlitzOptions
+    from iq_option_api.models import Asset, Direction, InstrumentType
+
+    sent = {}
+
+    class _Orders:
+        def create(self, **kw):
+            from iq_option_api.models import Order
+            return Order(direction=kw["direction"], amount=kw["amount"],
+                         balance_id=kw["balance_id"])
+
+        def validate(self, order, balance=None):
+            return order
+
+        def submit(self, order, ms, body, *, version="1.0", timeout=None, matcher=None):
+            sent.update(microservice=ms, body=body, version=version,
+                        has_matcher=matcher is not None)
+            return order
+
+    class _Market:
+        server_time = 1_700_000_000.0
+
+        def current_price(self, asset_id, itype=None):
+            return 1.153067
+
+        def get_asset(self, asset, itype=None):
+            return Asset(asset_id=1, name="EURUSD",
+                         instrument_type=InstrumentType.BLITZ)
+
+    class _Accounts:
+        user_balance_id = 1248546858
+
+    b = BlitzOptions.__new__(BlitzOptions)
+    b.ws, b.positions = None, None
+    b.market, b.accounts, b.orders = _Market(), _Accounts(), _Orders()
+    b.log = logging.getLogger("b")
+    b.get_asset = lambda *a, **k: b.market.get_asset(a[0] if a else None)
+    b.is_open = lambda *a, **k: True
+    b.payout = lambda *a, **k: 85.0
+    b.durations = lambda *a, **k: [5, 10, 15, 30, 60]
+    b._balance = lambda: 1000.0
+
+    b.buy("EURUSD", 1.0, Direction.CALL, 5)
+    body = sent["body"]
+
+    # The dead ``blitz-options.open-option`` channel is what produced
+    # "no response for request_id=N within 25.0s".
+    assert sent["microservice"] == "binary-options.open-option", sent["microservice"]
+    assert sent["version"] == "2.0", sent["version"]
+    assert body["option_type_id"] == 12, body
+    assert body["expiration_size"] == 5, body
+    # blitz needs an absolute ``expired`` too, not only the duration
+    assert body["expired"] == int(_Market.server_time) + 5, body
+    # ``value`` must carry the quote fraction, never a hardcoded 0
+    assert body["value"] == 153067, body
+    assert body["user_balance_id"] == 1248546858, body
+    assert sent["has_matcher"], "no broadcast fallback registered"
+    return json.dumps(body, sort_keys=True)
+
+
+def _blitz_durations_from_dict():
+    from iq_option_api.trading.blitz import BlitzOptions
+    parsed = BlitzOptions._parse_durations(
+        {"option": {"expiration_times": {"5": {}, "30": {}, "60": {}}}})
+    assert parsed == [5, 30, 60], parsed
+    # legacy top level list still works
+    assert BlitzOptions._parse_durations({"durations": [10, 15]}) == [10, 15]
+    assert BlitzOptions._parse_durations({}) == []
+    return "option.expiration_times dict + legacy list"
+
+
+def _closed_market_is_detected():
+    """Fail 2: 'the asset is not available at the moment'."""
+    import logging
+    from iq_option_api.market.assets import AssetCatalog
+    from iq_option_api.models import InstrumentType
+
+    now = time.time()
+    closed = [[now - 7200, now - 3600]]      # window already over
+    open_now = [[now - 60, now + 3600]]
+
+    class _WS(FakeGateway):
+        def call(self, microservice, body, **kw):
+            return {
+                "binary": {"actives": {
+                    "1": {"id": 1, "name": "EURUSD", "enabled": True,
+                          "is_suspended": False, "schedule": closed},
+                    "76": {"id": 76, "name": "EURUSD-OTC", "enabled": True,
+                           "is_suspended": False, "schedule": open_now},
+                }},
+                "blitz": {"actives": {
+                    "1": {"id": 1, "name": "EURUSD", "enabled": True,
+                          "is_suspended": False, "schedule": closed},
+                }},
+            }
+
+    cat = AssetCatalog(_WS(lambda f: []), logger=logging.getLogger("a"))
+
+    by_name = {a.name: a for a in cat.binary_assets()}
+    assert by_name["EURUSD"].is_open is False, "closed binary asset reported open"
+    assert by_name["EURUSD-OTC"].is_open is True, "open binary asset reported closed"
+
+    # blitz used to carry no market status at all -> always "open"
+    blitz = {a.name: a for a in cat.blitz_assets()}
+    assert blitz["EURUSD"].is_open is False, "closed blitz asset reported open"
+    return "schedule honoured for binary/turbo/blitz"
+
+
 check("binary/turbo body matches the v1.0 contract", _binary_body)
-check("digital body matches the v1.0 contract", _digital_body)
+check("digital body matches the v3.0 contract", _digital_body)
+check("blitz body goes out on the binary channel", _blitz_body)
+check("blitz durations parsed from init data", _blitz_durations_from_dict)
+check("closed markets are detected before ordering", _closed_market_is_detected)
 
 
 # ---------------------------------------------------------------------------
