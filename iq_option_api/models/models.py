@@ -189,11 +189,13 @@ class Balance(_Base):
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "Balance":
-        type_id = _to_int(_first(payload, "type", "type_id"), 0) or 0
+        raw_type = _first(payload, "type", "type_id")
+        type_id = _to_int(raw_type, 0) or 0
+        account_type = AccountType.from_type_id(raw_type)
         return cls(
             balance_id=_to_int(_first(payload, "id", "balance_id", "user_balance_id"), 0) or 0,
             type_id=type_id,
-            type=AccountType.from_type_id(type_id),
+            type=account_type,
             amount=_to_float(_first(payload, "amount", "balance"), 0.0) or 0.0,
             currency=str(_first(payload, "currency", "currency_code", default="")),
             user_id=_to_int(payload.get("user_id")),
