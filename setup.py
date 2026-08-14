@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """iqapi — Modular IQ Option trading API + bot.
 
-This is the pip-installable distribution.  It ships two importable
+This is the pip-installable distribution.  It ships three importable
 packages:
 
-* ``iqoptionapi`` — the thin, bot-facing facade over ``iq_option_api``
-                    (``from iqoptionapi import IQAPI``).  One file per
-                    capability.
-* ``bot``          — the modular live trader / backtester
-                    (``bot`` command, ``python -m bot``).
-
-The layered websocket engine those two run on is **not** bundled here; it
-is the separate ``iq_option_api`` package (see the README).
+* ``iq_option_api`` — the bundled layered websocket/trading engine
+                      (``from iq_option_api import IQOptionClient``).
+* ``iqoptionapi``   — the thin, bot-facing facade over that engine
+                      (``from iqoptionapi import IQAPI``).
+* ``bot``           — the modular live trader / backtester
+                      (``bot`` command, ``python -m bot``).
 """
 
 from pathlib import Path
@@ -31,7 +29,16 @@ setup(
     url="https://github.com/mehedi42x/iqapi",
     license="MIT",
     python_requires=">=3.9",
-    packages=find_packages(include=["iqoptionapi", "iqoptionapi.*", "bot", "bot.*"]),
+    packages=find_packages(
+        include=[
+            "iq_option_api",
+            "iq_option_api.*",
+            "iqoptionapi",
+            "iqoptionapi.*",
+            "bot",
+            "bot.*",
+        ]
+    ),
     include_package_data=True,
     package_data={
         "bot": [".env.example", "README.md"],
@@ -41,10 +48,6 @@ setup(
         "websocket-client>=1.6.0",
         "requests>=2.28.0",
         "curl_cffi>=0.7.0",
-        # The layered websocket engine behind iqoptionapi/ and bot/.  It is
-        # not published to PyPI — install it from your own source/index first,
-        # e.g.  pip install -e /path/to/iq_option_api
-        "iq_option_api",
     ],
     extras_require={
         "dev": [
@@ -65,6 +68,7 @@ setup(
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
         "Operating System :: OS Independent",
         "Topic :: Office/Business :: Financial :: Investment",
         "Topic :: Software Development :: Libraries :: Python Modules",
