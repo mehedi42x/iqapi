@@ -38,7 +38,18 @@ class BalanceManager:
 
         items = payload
         if isinstance(payload, dict):
-            items = payload.get("balances", payload.get("items", []))
+            # IQ Option has returned all of these wrappers over time:
+            # balances, items, result and data.  Accept only a list so a
+            # successful-but-different response cannot silently look empty.
+            items = payload.get("balances")
+            if items is None:
+                items = payload.get("items")
+            if items is None:
+                items = payload.get("result")
+            if items is None:
+                items = payload.get("data")
+            if items is None and any(k in payload for k in ("id", "balance_id")):
+                items = [payload]
         if not isinstance(items, list):
             raise ProtocolError("unexpected get-balances payload", details=payload)
 
