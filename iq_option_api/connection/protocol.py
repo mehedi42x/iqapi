@@ -44,12 +44,25 @@ MS_DIGITAL_INSTRUMENTS = "digital-option-instruments.get-instruments"
 MS_DIGITAL_PRICE_EVENT = "instrument-quotes-generated"
 MS_DIGITAL_STRIKE_LIST = "get-strike-list"
 MS_DIGITAL_PLACE = "digital-options.place-digital-option"
+# ``digital-options.place-digital-option`` is a **v3.0** microservice: the
+# captured wire traffic shows version 3.0 with a body of
+# ``{user_balance_id, instrument_id, amount}`` (+ ``instrument_index`` /
+# ``asset_id`` when they are known) and a ``digital-option-placed`` reply.
+DIGITAL_PLACE_VERSION = "3.0"
 # ``buyV3`` was the pre-2019 channel and the gateway silently drops it: the
 # frame is accepted but no reply is ever correlated back, which surfaced as
 # ``no response for request_id=N within 25s``.  The live channel is the
 # ``binary-options`` microservice below (version 1.0).
 MS_BINARY_OPEN = "binary-options.open-option"
-MS_BLITZ_OPEN = "blitz-options.open-option"
+# Blitz has **no** microservice of its own.  ``blitz-options.open-option`` is
+# not routed by the gateway at all - the frame is accepted and then silently
+# dropped, which is exactly the ``no response for request_id=N within 25.0s``
+# failure reported for blitz orders.  Blitz rides on the binary channel with
+# ``option_type_id = 12`` and version **2.0** (2.0 is the version that accepts
+# the extra ``expiration_size`` field).
+MS_BLITZ_OPEN = MS_BINARY_OPEN
+BLITZ_OPEN_VERSION = "2.0"
+BINARY_OPEN_VERSION = "1.0"
 MS_MARGINAL_PLACE = "place-order-temp"
 MS_MARGINAL_UNDERLYING = "marginal-instruments.get-underlying-list"
 MS_MARGINAL_INSTRUMENTS = "marginal-instruments.get-instruments"
@@ -69,7 +82,16 @@ MS_HEARTBEAT = "heartbeat"
 EVENT_CANDLE_GENERATED = "candle-generated"
 EVENT_TRADERS_MOOD = "traders-mood-changed"
 EVENT_TOP_ASSETS = "top-assets-updated"
+# Digital strike books arrive on **two** different streams depending on the
+# gateway/account:
+#   * ``instrument-quotes-generated``           (older, quotes[].symbols[])
+#   * ``digital-option-client-price-generated`` (current, prices[].call/put)
+# Both carry the same information; the client subscribes to both and merges
+# whichever answers first, so a gateway that only speaks one of them no longer
+# times out with "event 'instrument-quotes-generated' not received".
 EVENT_DIGITAL_QUOTES = "instrument-quotes-generated"
+EVENT_DIGITAL_CLIENT_PRICE = "digital-option-client-price-generated"
+DIGITAL_PRICE_EVENTS = (EVENT_DIGITAL_QUOTES, EVENT_DIGITAL_CLIENT_PRICE)
 
 # Binary / turbo / blitz order lifecycle events.  ``binary-options.open-option``
 # answers with an ``option`` frame carrying the echoed ``request_id``; the
@@ -80,12 +102,19 @@ EVENT_OPTION_OPENED = "option-opened"
 EVENT_SOCKET_OPTION_OPENED = "socket-option-opened"
 EVENT_OPTION_REJECTED = "option-rejected"
 EVENT_BUY_COMPLETE = "buyComplete"
+# Digital placement answers with ``digital-option-placed`` (accepted, carries
+# ``{"id": <order id>}``) or ``digital-option-rejected``.  Like the binary
+# events these are often *broadcast* without echoing our envelope request_id.
+EVENT_DIGITAL_PLACED = "digital-option-placed"
+EVENT_DIGITAL_REJECTED = "digital-option-rejected"
 OPTION_RESULT_EVENTS = (
     EVENT_OPTION,
     EVENT_OPTION_OPENED,
     EVENT_SOCKET_OPTION_OPENED,
     EVENT_OPTION_REJECTED,
     EVENT_BUY_COMPLETE,
+    EVENT_DIGITAL_PLACED,
+    EVENT_DIGITAL_REJECTED,
 )
 
 # ``option_type_id`` values understood by ``*-options.open-option``.

@@ -21,23 +21,58 @@ from typing import Any, Callable, Dict, List, Optional
 Callback = Callable[[Any], None]
 
 
+#: Field names that a routing filter may use but that the *payload* never
+#: echoes back.  ``routingFilters`` are applied server-side: the platform only
+#: sends us frames that already match, and the event body then carries the
+#: data, not the filter.  Re-checking these locally rejected every frame and
+#: made the subscription look dead - this is what produced
+#: ``TimeoutError: event 'instrument-quotes-generated' not received``.
+_SERVER_SIDE_ONLY = frozenset({
+    "kind", "instrument_type", "expiration_period", "period",
+    "instrument_types", "user_id", "user_balance_id", "balance_id",
+})
+
+#: Aliases the payload may use for a filter key (``active`` vs ``active_id``).
+_FIELD_ALIASES = {
+    "active": ("active", "active_id", "asset_id"),
+    "active_id": ("active_id", "active", "asset_id"),
+    "asset_id": ("asset_id", "active_id", "active"),
+    "instrument_type": ("instrument_type", "type"),
+    "size": ("size",),
+}
+
+
+def _lookup(payload: Dict[str, Any], key: str) -> Any:
+    """Read ``key`` (or one of its aliases) from a payload, one level deep."""
+    sources = [payload]
+    nested = payload.get("msg")
+    if isinstance(nested, dict):
+        sources.append(nested)
+    for source in sources:
+        for name in _FIELD_ALIASES.get(key, (key,)):
+            value = source.get(name)
+            if value is not None:
+                return value
+    return None
+
+
 def _matches(params: Dict[str, Any], payload: Any) -> bool:
-    """Check that every routing filter is satisfied by ``payload``."""
+    """Check that the routing filters do not *contradict* ``payload``.
+
+    The server has already filtered the stream, so a missing field is not a
+    mismatch - only a field that is present *and different* is.
+    """
     if not params:
         return True
     if not isinstance(payload, dict):
         return False
     for key, expected in params.items():
-        if expected is None:
+        if expected is None or key in _SERVER_SIDE_ONLY:
             continue
-        actual = payload.get(key)
+        actual = _lookup(payload, key)
         if actual is None:
-            # Some events nest the field one level down.
-            nested = payload.get("msg") if isinstance(payload.get("msg"), dict) else None
-            if isinstance(nested, dict):
-                actual = nested.get(key)
-        if actual is None:
-            return False
+            # Not echoed back by this event - the server already routed it.
+            continue
         if str(actual) != str(expected):
             return False
     return True

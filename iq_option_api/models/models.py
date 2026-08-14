@@ -464,6 +464,17 @@ class Candle(_Base):
     low: float = 0.0
     volume: float = 0.0
     at: Optional[float] = None
+    # The live ``candle-generated`` stream carries the top of book alongside
+    # the OHLC values; historical ``get-candles`` rows do not.
+    ask: Optional[float] = None
+    bid: Optional[float] = None
+    phase: str = ""
+
+    @property
+    def spread(self) -> Optional[float]:
+        if self.ask is None or self.bid is None:
+            return None
+        return self.ask - self.bid
 
     @property
     def is_bullish(self) -> bool:
@@ -494,6 +505,9 @@ class Candle(_Base):
             low=_to_float(_first(payload, "min", "low"), 0.0) or 0.0,
             volume=_to_float(payload.get("volume"), 0.0) or 0.0,
             at=_normalize_ts(payload.get("at")),
+            ask=_to_float(payload.get("ask")),
+            bid=_to_float(payload.get("bid")),
+            phase=str(payload.get("phase", "") or ""),
             raw=payload,
         )
 
@@ -542,12 +556,19 @@ class Order(_Base):
         order.leverage = _to_int(payload.get("leverage"), order.leverage)
         order.balance_id = _to_int(_first(payload, "user_balance_id", "balance_id"), order.balance_id)
         status = str(_first(payload, "status", "state", default="")).lower()
-        order.state = {
-            "filled": OrderState.FILLED, "closed": OrderState.FILLED,
-            "pending": OrderState.PENDING, "created": OrderState.CREATED,
-            "rejected": OrderState.REJECTED, "canceled": OrderState.CANCELLED,
-            "cancelled": OrderState.CANCELLED, "expired": OrderState.EXPIRED,
-        }.get(status, order.state if status == "" else OrderState.UNKNOWN)
+        # The gateway also answers with *numeric* status codes (digital
+        # placement replies ``{"name": "digital-option-placed", "status": 2000}``):
+        # 2xxx = accepted, anything else is a failure.
+        if status.isdigit():
+            order.state = (OrderState.FILLED if status.startswith("2")
+                           else OrderState.REJECTED)
+        else:
+            order.state = {
+                "filled": OrderState.FILLED, "closed": OrderState.FILLED,
+                "pending": OrderState.PENDING, "created": OrderState.CREATED,
+                "rejected": OrderState.REJECTED, "canceled": OrderState.CANCELLED,
+                "cancelled": OrderState.CANCELLED, "expired": OrderState.EXPIRED,
+            }.get(status, order.state if status == "" else OrderState.UNKNOWN)
         order.raw = payload
         return order
 

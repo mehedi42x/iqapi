@@ -249,7 +249,13 @@ class IQOptionClient:
 
     def use_account(self, account_type: "AccountType | str") -> Account:
         """Switch account - always verified against server data."""
-        return self.accounts.use_account(account_type)
+        account = self.accounts.use_account(account_type)
+        # Every position query is scoped by ``user_balance_id``; keep the
+        # position manager pointed at the account we just selected so result
+        # polling never reads another balance.
+        self.positions.bind_account(balance_id=account.balance_id,
+                                    user_id=self.accounts.user_id)
+        return account
 
     def use_practice(self) -> Account:
         return self.use_account(AccountType.PRACTICE)

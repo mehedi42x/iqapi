@@ -33,6 +33,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..account import AccountManager
 from ..connection.protocol import (
+    DIGITAL_PLACE_VERSION,
+    DIGITAL_PRICE_EVENTS,
+    EVENT_DIGITAL_CLIENT_PRICE,
     EVENT_DIGITAL_QUOTES,
     MS_DIGITAL_INSTRUMENTS,
     MS_DIGITAL_PLACE,
@@ -59,6 +62,7 @@ from ..models import (
     Position,
     TradeResult,
 )
+from .option_events import digital_matcher
 from .orders import OrderManager
 from .positions import PositionManager
 
@@ -73,11 +77,26 @@ _SYMBOL_RE = re.compile(
     r"(?:SPT|(?P<strike>\d+(?:\.\d+)?))$"
 )
 
+# The current platform emits a second, denser id format keyed by the numeric
+# asset id rather than the ticker, e.g.
+#   do1861A20260812D052000T1MCSPT          (ATM)
+#   do1861A20260812D052000T1MC1F153067     (strike 1.153067)
+# Layout: do<asset_id>A<YYYYMMDD>D<HHMMSS>T<period><C|P><SPT | strike>
+# where the strike encodes the decimal point as "F" (1F153067 -> 1.153067).
+_SYMBOL_RE_V2 = re.compile(
+    r"^do(?P<asset_id>\d+)A(?P<date>\d{8})D(?P<time>\d{6})"
+    r"T(?P<period>\d+[MH])(?P<dir>[CP])"
+    r"(?:SPT|(?P<strike>[0-9]+F[0-9]+|[0-9]+))$"
+)
+
 
 class DigitalOptions:
     """Strike-based options priced by the ``instrument-quotes-generated`` stream."""
 
+    #: Kept for backwards compatibility; the client listens to *both* names in
+    #: :data:`~iq_option_api.connection.protocol.DIGITAL_PRICE_EVENTS`.
     EVENT_PRICE = EVENT_DIGITAL_QUOTES
+    EVENT_PRICES = DIGITAL_PRICE_EVENTS
 
     def __init__(self, client: WebSocketClient, market: MarketManager,
                  accounts: AccountManager, orders: OrderManager,
@@ -93,7 +112,7 @@ class DigitalOptions:
         # instrument_index -> {asset_id, period, expiration, strikes{...}}
         self._books: Dict[str, Dict[str, Any]] = {}
         self._by_asset: Dict[Tuple[int, int], str] = {}   # (asset_id, period) -> index
-        self._subs: Dict[int, Any] = {}
+        self._subs: Dict[Tuple[int, int], Any] = {}   # (asset_id, period) -> subs
         self._lock = threading.RLock()
 
     # ==================================================================
@@ -126,13 +145,19 @@ class DigitalOptions:
     # ==================================================================
     def subscribe_prices(self, asset: "str | int", *, period: int = 60,
                          callback=None):
-        """Subscribe to ``instrument-quotes-generated`` for (asset, period).
+        """Subscribe to the digital strike book for (asset, period).
 
-        The quote stream is filtered on ``active`` + ``expiration_period`` +
-        ``kind``; those three routing filters are mandatory.  Nothing is
-        delivered when they are wrong (this is what made ``price_book`` time
-        out), and a subscription for the 60s book says nothing about the 300s
-        book - hence one subscription per (asset, period) pair.
+        Two different streams carry the book depending on the gateway:
+
+        * ``instrument-quotes-generated``            filtered on
+          ``active`` + ``expiration_period`` + ``kind``
+        * ``digital-option-client-price-generated``  filtered on ``asset_id``
+          (and ``instrument_type``)
+
+        Only listening to the first one is what produced
+        ``TimeoutError: event 'instrument-quotes-generated' not received``:
+        the account was being served the *second* stream, so no frame ever
+        matched.  We now subscribe to both and merge whichever answers.
         """
         asset_id = self.market.asset_id(asset, InstrumentType.DIGITAL)
         period = int(period)
@@ -146,29 +171,49 @@ class DigitalOptions:
             if book and callback:
                 callback(book)
 
-        sub = self.ws.subscribe(self.EVENT_PRICE,
-                                params={"active": asset_id,
-                                        "expiration_period": period,
-                                        "kind": "digital-option"},
-                                version="1.0", callback=_handler)
+        subs = [
+            self.ws.subscribe(EVENT_DIGITAL_QUOTES,
+                              params={"active": asset_id,
+                                      "expiration_period": period,
+                                      "kind": "digital-option"},
+                              version="1.0", callback=_handler),
+            self.ws.subscribe(EVENT_DIGITAL_CLIENT_PRICE,
+                              params={"asset_id": asset_id,
+                                      "instrument_type": "digital-option"},
+                              version="1.0", callback=_handler),
+        ]
         with self._lock:
-            self._subs[key] = sub
-        return sub
+            self._subs[key] = subs
+        return subs
 
     def unsubscribe_prices(self, asset: "str | int", *, period: int = 60) -> bool:
         asset_id = self.market.asset_id(asset, InstrumentType.DIGITAL)
         with self._lock:
-            sub = self._subs.pop((asset_id, int(period)), None)
-        return self.ws.unsubscribe(sub.subscription_id) if sub else False
+            subs = self._subs.pop((asset_id, int(period)), None)
+        if not subs:
+            return False
+        if not isinstance(subs, list):
+            subs = [subs]
+        return all(self.ws.unsubscribe(s.subscription_id) for s in subs)
 
     def _ingest_price_event(self, payload: Any) -> Optional[Dict[str, Any]]:
-        """Parse one ``instrument-quotes-generated`` frame into a strike book.
+        """Parse one digital price frame into a strike book.
 
-        Wire shape::
+        Two wire shapes are accepted.
+
+        ``instrument-quotes-generated``::
 
             {"active": 1, "expiration": {"period": 60, "timestamp": 1700000000},
              "quotes": [{"price": {"ask": 42.1, "bid": 40.0},
                          "symbols": ["doEURUSD202401151230PT1MCSPT", ...]}]}
+
+        ``digital-option-client-price-generated``::
+
+            {"asset_id": 1861, "instrument_index": 835766,
+             "digital_option_trading_group_id": "191_0",
+             "prices": [{"strike": "1.153067",
+                         "call": {"symbol": "do1861A...C1F153067", "bid": 65},
+                         "put":  {"symbol": "do1861A...P1F153067", "bid": 33}}]}
 
         Each *symbol* is itself the tradable ``instrument_id`` - digital
         placement never invents one.  Profit follows the platform's own
@@ -185,16 +230,43 @@ class DigitalOptions:
         period = int(expiration_obj.get("period")
                      or msg.get("period")
                      or msg.get("expiration_size")
-                     or 60)
+                     or 0)
         expiration = expiration_obj.get("timestamp", msg.get("expiration_time"))
-        instrument_index = msg.get("instrument_index", f"{int(asset_id)}:{period}")
-
         strikes: Dict[str, DigitalStrike] = {}
+
         for entry in (msg.get("quotes") or msg.get("prices") or []):
             if not isinstance(entry, dict):
                 continue
-            price = entry.get("price") if isinstance(entry.get("price"), dict) else {}
-            ask = self._to_float(price.get("ask"))
+
+            # -- shape B: {"strike": "...", "call": {...}, "put": {...}} -----
+            if isinstance(entry.get("call"), dict) or isinstance(entry.get("put"), dict):
+                key = self._strike_key(entry.get("strike"))
+                strike = strikes.get(key)
+                if strike is None:
+                    strike = DigitalStrike(
+                        value=self._to_float(entry.get("strike"))
+                        or self._strike_value(key) or 0.0)
+                    strikes[key] = strike
+                for name, direction in (("call", Direction.CALL), ("put", Direction.PUT)):
+                    side = entry.get(name)
+                    if not isinstance(side, dict):
+                        continue
+                    symbol = side.get("symbol") or side.get("id")
+                    if not symbol:
+                        continue
+                    # ``bid`` here is the option price in the same 0-100 scale
+                    # the other stream calls ``ask``.
+                    price = self._to_float(side.get("ask", side.get("bid")))
+                    profit = ((100.0 - price) * 100.0) / price if price else None
+                    self._apply_side(strike, direction, str(symbol), price, profit)
+                strike.raw = entry
+                if period == 0:
+                    period = self._period_of(strike.symbol_call or strike.symbol_put) or period
+                continue
+
+            # -- shape A: {"price": {...}, "symbols": [...]} ------------------
+            price_obj = entry.get("price") if isinstance(entry.get("price"), dict) else {}
+            ask = self._to_float(price_obj.get("ask"))
             profit = ((100.0 - ask) * 100.0) / ask if ask else None
 
             symbols = entry.get("symbols")
@@ -211,20 +283,16 @@ class DigitalOptions:
                 if strike is None:
                     strike = DigitalStrike(value=self._strike_value(key) or 0.0)
                     strikes[key] = strike
-                if direction is Direction.CALL:
-                    strike.symbol_call = symbol
-                    strike.instrument_id_call = symbol
-                    strike.price_call = ask
-                    strike.profit_call = profit
-                else:
-                    strike.symbol_put = symbol
-                    strike.instrument_id_put = symbol
-                    strike.price_put = ask
-                    strike.profit_put = profit
+                self._apply_side(strike, direction, symbol, ask, profit)
                 strike.raw = entry
+                if period == 0:
+                    period = self._period_of(symbol) or period
 
         if not strikes:
             return None
+
+        period = period or 60
+        instrument_index = msg.get("instrument_index", f"{int(asset_id)}:{period}")
 
         book = {
             "instrument_index": str(instrument_index),
@@ -242,8 +310,16 @@ class DigitalOptions:
 
     def price_book(self, asset: "str | int", *, period: int = 60,
                    timeout: float = 30.0, max_age: float = 10.0) -> Dict[str, Any]:
-        """Latest strike book for (asset, period), subscribing if necessary."""
+        """Latest strike book for (asset, period), subscribing if necessary.
+
+        The subscriptions opened by :meth:`subscribe_prices` fill ``_books``
+        from the reader thread; this method just waits for one of them to land.
+        Both digital price streams are polled, so an account served only
+        ``digital-option-client-price-generated`` no longer times out waiting
+        for ``instrument-quotes-generated``.
+        """
         asset_id = self.market.asset_id(asset, InstrumentType.DIGITAL)
+        period = int(period)
         with self._lock:
             index = self._by_asset.get((asset_id, period))
             book = self._books.get(index) if index else None
@@ -253,16 +329,6 @@ class DigitalOptions:
         self.subscribe_prices(asset_id, period=period)
         deadline = time.time() + timeout
 
-        def _matches(p: Any) -> bool:
-            if not isinstance(p, dict):
-                return False
-            msg = p.get("msg") if isinstance(p.get("msg"), dict) else p
-            active = msg.get("active", msg.get("asset_id", msg.get("active_id")))
-            try:
-                return int(active or 0) == asset_id
-            except (TypeError, ValueError):
-                return False
-
         while time.time() < deadline:
             # The subscription callback fills ``_books`` on its own; re-check it
             # each pass so a frame delivered between waits is not missed.
@@ -271,15 +337,55 @@ class DigitalOptions:
                 cached = self._books.get(index) if index else None
             if cached and (time.time() - cached["updated_at"]) < max_age:
                 return cached
-            payload = self.ws.wait_for(
-                self.EVENT_PRICE, timeout=max(1.0, deadline - time.time()),
-                predicate=_matches,
-            )
-            book = self._ingest_price_event(payload)
-            if book and (period is None or book["period"] == period):
-                return book
+            time.sleep(0.2)
+
+        # Nothing on the streams - fall back to the request/response strike
+        # list, which needs no subscription at all.
+        book = self._book_from_strike_list(asset_id, period)
+        if book:
+            return book
+
         raise IQTimeoutError(
-            f"no digital price data for asset {asset_id} period {period}s within {timeout}s")
+            f"no digital price data for asset {asset_id} period {period}s within "
+            f"{timeout}s (tried {', '.join(DIGITAL_PRICE_EVENTS)} and get-strike-list)")
+
+    def _book_from_strike_list(self, asset_id: int,
+                               period: int) -> Optional[Dict[str, Any]]:
+        """Build a strike book from ``get-strike-list`` (no stream needed)."""
+        duration = max(1, int(round(period / 60.0)))
+        try:
+            strike_map = self.strike_list(asset_id, duration=duration)
+        except Exception as exc:
+            self.log.debug("get-strike-list fallback failed: %s", exc)
+            return None
+        if not strike_map:
+            return None
+
+        strikes: Dict[str, DigitalStrike] = {}
+        for value, ids in strike_map.items():
+            key = self._strike_key(value)
+            strike = DigitalStrike(value=self._to_float(value) or 0.0)
+            if ids.get("call"):
+                self._apply_side(strike, Direction.CALL, str(ids["call"]), None, None)
+            if ids.get("put"):
+                self._apply_side(strike, Direction.PUT, str(ids["put"]), None, None)
+            strikes[key] = strike
+
+        index = f"{int(asset_id)}:{period}"
+        book = {
+            "instrument_index": index,
+            "asset_id": int(asset_id),
+            "period": period,
+            "expiration": float(self._strike_expiration(duration)),
+            "strikes": strikes,
+            "updated_at": time.time(),
+            "raw": {"source": "get-strike-list"},
+        }
+        with self._lock:
+            self._books[index] = book
+            self._by_asset[(int(asset_id), period)] = index
+        self.log.info("digital book for asset %s built from get-strike-list", asset_id)
+        return book
 
     def strike_list(self, asset: "str | int", *, duration: int = 1,
                     timeout: Optional[float] = None) -> Dict[str, Dict[str, str]]:
@@ -415,15 +521,32 @@ class DigitalOptions:
                                    amount=amount, balance_id=balance_id)
         self.orders.validate(order, balance=self._balance())
 
-        # ``place-digital-option`` takes exactly these three fields; the
-        # direction and asset are already encoded in ``instrument_id``, and
-        # sending them as extras gets the frame rejected.
-        body = {
+        # ``digital-options.place-digital-option`` is a **v3.0** microservice
+        # and takes exactly these three fields (captured wire traffic):
+        #   {"user_balance_id": int, "instrument_id": str, "amount": str}
+        # The direction, asset, strike and expiry are all encoded inside
+        # ``instrument_id`` (taken from the price stream, never invented), so
+        # nothing else needs to be sent - extra fields risk a parse error.
+        body: Dict[str, Any] = {
             "user_balance_id": int(balance_id),
             "instrument_id": str(instrument.instrument_id),
-            "amount": str(float(amount)),
+            "amount": self._format_amount(amount),
         }
-        return self.orders.submit(order, MS_DIGITAL_PLACE, body, version="1.0", timeout=timeout)
+
+        # The reply is ``{"name": "digital-option-placed", "msg": {"id": ...},
+        # "status": 2000}`` and often omits the envelope request_id, so
+        # correlate the broadcast on the symbol we just sent.
+        matcher = digital_matcher(instrument_id=body["instrument_id"],
+                                  balance_id=body["user_balance_id"])
+        return self.orders.submit(order, MS_DIGITAL_PLACE, body,
+                                  version=DIGITAL_PLACE_VERSION,
+                                  timeout=timeout, matcher=matcher)
+
+    @staticmethod
+    def _format_amount(amount: float) -> str:
+        """Amount as the string the gateway expects (``"1000"``, ``"1.5"``)."""
+        value = float(amount)
+        return str(int(value)) if value.is_integer() else repr(value)
 
     def call(self, asset: "str | int", amount: float, *, duration: int = 1,
              **kwargs: Any) -> Order:
@@ -463,34 +586,102 @@ class DigitalOptions:
     # ==================================================================
     @staticmethod
     def parse_symbol(symbol: str) -> Dict[str, Any]:
-        """Decode a digital symbol such as ``doEURUSD202401151230PT1MCSPT``."""
-        match = _SYMBOL_RE.match(symbol or "")
-        if not match:
-            return {"symbol": symbol}
-        groups = match.groupdict()
-        return {
-            "symbol": symbol,
-            "asset": groups["asset"],
-            "expiry": groups["expiry"],
-            "period": groups["period"],
-            "direction": Direction.CALL if groups["dir"] == "C" else Direction.PUT,
-            "strike": groups.get("strike"),
-        }
+        """Decode a digital symbol.
+
+        Handles both id formats the platform emits:
+
+        * ``doEURUSD202401151230PT1MCSPT``      (ticker + 12-digit stamp)
+        * ``do1861A20260812D052000T1MCSPT``     (asset id + A<date>D<time>)
+        """
+        symbol = symbol or ""
+        match = _SYMBOL_RE.match(symbol)
+        if match:
+            groups = match.groupdict()
+            return {
+                "symbol": symbol,
+                "asset": groups["asset"],
+                "expiry": groups["expiry"],
+                "period": groups["period"],
+                "direction": Direction.CALL if groups["dir"] == "C" else Direction.PUT,
+                "strike": groups.get("strike"),
+            }
+
+        match = _SYMBOL_RE_V2.match(symbol)
+        if match:
+            groups = match.groupdict()
+            return {
+                "symbol": symbol,
+                "asset": groups["asset_id"],
+                "asset_id": int(groups["asset_id"]),
+                "expiry": f"{groups['date']}{groups['time'][:4]}",
+                "period": groups["period"],
+                "direction": Direction.CALL if groups["dir"] == "C" else Direction.PUT,
+                "strike": groups.get("strike"),
+            }
+
+        return {"symbol": symbol}
 
     @staticmethod
     def _strike_value(key: str) -> Optional[float]:
         """Decode the strike embedded in an instrument id.
 
-        Strikes ride in the symbol as fixed-point integers scaled by 1e-6
-        (``11350481`` -> ``113.50481``); ``SPT`` marks the at-the-money entry,
-        which has no strike of its own.
+        Two encodings are in use:
+
+        * ``11350481``  - fixed-point integer scaled by 1e-6 -> ``113.50481``
+        * ``1F153067``  - ``F`` stands in for the decimal point -> ``1.153067``
+
+        ``SPT`` marks the at-the-money entry, which has no strike of its own.
         """
         if not key or key == "SPT":
             return None
+        text = str(key)
+        if "F" in text:
+            whole, _, fraction = text.partition("F")
+            try:
+                return float(f"{whole}.{fraction}")
+            except (TypeError, ValueError):
+                return None
         try:
-            return float(key) * 10e-7
+            return float(text) * 10e-7
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _apply_side(strike: DigitalStrike, direction: Direction, symbol: str,
+                    price: Optional[float], profit: Optional[float]) -> None:
+        """Store one CALL/PUT leg of a strike."""
+        if direction is Direction.CALL:
+            strike.symbol_call = symbol
+            strike.instrument_id_call = symbol
+            strike.price_call = price
+            strike.profit_call = profit
+        else:
+            strike.symbol_put = symbol
+            strike.instrument_id_put = symbol
+            strike.price_put = price
+            strike.profit_put = profit
+
+    @staticmethod
+    def _strike_key(value: Any) -> str:
+        """Normalise the book key of a strike (``"SPT"`` for at-the-money)."""
+        if value in (None, "", "SPT", "spt"):
+            return "SPT"
+        return str(value)
+
+    @classmethod
+    def _period_of(cls, symbol: Optional[str]) -> Optional[int]:
+        """Expiry period in seconds decoded from a symbol (``PT1M`` / ``T1M``)."""
+        if not symbol:
+            return None
+        info = cls.parse_symbol(str(symbol))
+        raw = info.get("period")
+        if not raw:
+            return None
+        try:
+            value, unit = int(str(raw)[:-1]), str(raw)[-1].upper()
+        except (TypeError, ValueError):
+            return None
+        return value * (3600 if unit == "H" else 60)
 
     @staticmethod
     def _to_float(value: Any) -> Optional[float]:

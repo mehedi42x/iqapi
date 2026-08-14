@@ -11,7 +11,11 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from ..account import AccountManager
-from ..connection.protocol import MS_BLITZ_OPEN, OPTION_TYPE_BLITZ
+from ..connection.protocol import (
+    BLITZ_OPEN_VERSION,
+    MS_BLITZ_OPEN,
+    OPTION_TYPE_BLITZ,
+)
 from ..connection.websocket import WebSocketClient
 from ..exceptions import AssetError, OrderError
 from ..market import MarketManager
@@ -77,12 +81,10 @@ class BlitzOptions:
     def get_option(self, asset: "str | int", duration: int = 60) -> BlitzOption:
         asset_obj = self.get_asset(asset)
         raw = asset_obj.raw or {}
-        durations = []
-        for key in ("expiration_times", "durations", "times"):
-            value = raw.get(key)
-            if isinstance(value, (list, tuple)):
-                durations = [int(v) for v in value if isinstance(v, (int, float))]
-                break
+        # The initialization data nests the offered expirations under
+        # ``option.expiration_times`` (a dict keyed by the duration in
+        # seconds); older payloads put a plain list at the top level.
+        durations = self._parse_durations(raw)
         return BlitzOption(
             asset_id=asset_obj.asset_id,
             name=asset_obj.name,
@@ -92,6 +94,41 @@ class BlitzOptions:
             durations=durations or list(self.DURATIONS),
             raw=raw,
         )
+
+    @staticmethod
+    def _parse_durations(raw: Dict[str, Any]) -> List[int]:
+        """Blitz expirations offered by the server, in seconds."""
+        sources: List[Any] = []
+        option = raw.get("option")
+        if isinstance(option, dict):
+            sources.append(option.get("expiration_times"))
+            sources.append(option.get("expiration"))
+        for key in ("expiration_times", "durations", "times"):
+            sources.append(raw.get(key))
+
+        for value in sources:
+            if isinstance(value, dict):
+                # {"5": {...}, "10": {...}} - the keys are the durations
+                parsed = []
+                for key in value:
+                    try:
+                        parsed.append(int(key))
+                    except (TypeError, ValueError):
+                        continue
+                if parsed:
+                    return sorted(set(parsed))
+            elif isinstance(value, (list, tuple)):
+                parsed = []
+                for item in value:
+                    if isinstance(item, dict):
+                        item = item.get("time", item.get("value"))
+                    try:
+                        parsed.append(int(item))
+                    except (TypeError, ValueError):
+                        continue
+                if parsed:
+                    return sorted(set(parsed))
+        return []
 
     def get_instrument(self, asset: "str | int", duration: int = 60) -> Instrument:
         option = self.get_option(asset, duration)
@@ -158,10 +195,11 @@ class BlitzOptions:
             direction = Direction.CALL if direction.is_long else Direction.PUT
 
         duration = int(duration)
-        if duration not in self.durations(asset):
+        available = self.durations(asset)
+        if duration not in available:
             raise OrderError(
                 f"invalid blitz duration {duration}s",
-                details={"available": self.durations(asset)})
+                details={"available": available})
 
         if check_market and not self.is_open(asset):
             raise AssetError(f"blitz market closed for {asset}")
@@ -175,14 +213,25 @@ class BlitzOptions:
         )
         self.orders.validate(order, balance=self._balance())
 
+        # ``blitz-options.open-option`` does not exist on the gateway: the
+        # frame is accepted and then silently dropped, which is the
+        # "no response for request_id=N within 25.0s" failure.  Blitz is
+        # placed on the *binary* channel (v2.0) with ``option_type_id=12``,
+        # and unlike binary/turbo it needs BOTH:
+        #   * ``expired``          - absolute server timestamp of the expiry
+        #   * ``expiration_size``  - the duration in seconds
+        # plus a non-zero ``value`` (the quote the order is priced against);
+        # sending ``value: 0`` gets the order rejected.
+        expired = int(self.market.server_time) + duration
         body: Dict[str, Any] = {
             "user_balance_id": int(balance_id),
             "active_id": int(instrument.asset_id),
             "option_type_id": OPTION_TYPE_BLITZ,
             "direction": direction.value.lower(),
+            "expired": expired,
             "expiration_size": duration,
             "price": float(amount),
-            "value": 0,
+            "value": self._quote_value(instrument.asset_id),
             "refund_value": 0,
             "profit_percent": int(instrument.payout or 0),
         }
@@ -191,8 +240,29 @@ class BlitzOptions:
         matcher = option_matcher(active_id=body["active_id"],
                                  direction=body["direction"],
                                  balance_id=body["user_balance_id"])
-        return self.orders.submit(order, MS_BLITZ_OPEN, body, version="1.0",
+        return self.orders.submit(order, MS_BLITZ_OPEN, body,
+                                  version=BLITZ_OPEN_VERSION,
                                   timeout=timeout, matcher=matcher)
+
+    def _quote_value(self, asset_id: int) -> int:
+        """``value`` field of an open-option body.
+
+        The platform sends the fractional part of the current quote as an
+        integer (``1.153067`` -> ``153067``).  It is used to price the option
+        at submission time; a hardcoded ``0`` is refused by the gateway.
+        Falls back to ``0`` when no quote is reachable so a missing tick never
+        blocks the order path outright.
+        """
+        try:
+            price = self.market.current_price(int(asset_id), InstrumentType.BLITZ)
+        except Exception as exc:
+            self.log.debug("no quote for asset %s (%s), sending value=0", asset_id, exc)
+            return 0
+        try:
+            fraction = str(float(price)).split(".")
+            return int(fraction[1]) if len(fraction) > 1 else 0
+        except (TypeError, ValueError, IndexError):
+            return 0
 
     def call(self, asset: "str | int", amount: float, duration: int = 60, **kw: Any) -> Order:
         return self.buy(asset, amount, Direction.CALL, duration, **kw)
@@ -211,7 +281,13 @@ class BlitzOptions:
         order_id = order.order_id if isinstance(order, Order) else int(order)
         position = self.position_of(order_id)
         if position is None:
-            self.positions.refresh(instrument_types=[InstrumentType.BLITZ])
+            # ``portfolio.get-positions`` v4.0 is scoped by balance: without
+            # ``user_balance_id`` the gateway answers for the wrong account
+            # (or not at all), so a blitz position placed on PRACTICE would
+            # never be found.
+            self.positions.refresh(instrument_types=[InstrumentType.BLITZ],
+                                   user_balance_id=self.accounts.active_balance_id,
+                                   limit=30)
             position = self.positions.by_order_id(order_id)
         if position is None:
             raise OrderError(f"no blitz position for order {order_id}")

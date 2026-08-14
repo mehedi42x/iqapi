@@ -83,8 +83,8 @@ with IQOptionClient() as iq:                 # connect + authenticate + account 
 | Orders | `trading/orders.py` | creation → validation → submission → id → state (pending/filled/rejected), cancel/modify, order history |
 | Positions | `trading/positions.py` | `portfolio.position-changed`, entry/current price, floating P/L, SL/TP, close, settlement, `wait_for_close` |
 | Binary | `trading/binary.py` | CALL/PUT, expiration, payout, result, P/L, history |
-| Digital | `trading/digital.py` | সম্পূর্ণ আলাদা flow: `digital-option-client-price-generated` → instrument_index → asset_id → strike → CALL/PUT symbol → instrument_id → trade |
-| Blitz | `trading/blitz.py` | 5/10/15/30/60s blitz option, position subscription, result |
+| Digital | `trading/digital.py` | সম্পূর্ণ আলাদা flow: price stream (`digital-option-client-price-generated` **বা** `instrument-quotes-generated`, দুটোতেই subscribe) → instrument_index → asset_id → strike → CALL/PUT symbol → instrument_id → `place-digital-option` v3.0. স্ট্রিম না এলে `get-strike-list` fallback |
+| Blitz | `trading/blitz.py` | 5/10/15/30/60s blitz option — `binary-options.open-option` v2.0 + `option_type_id=12` (আলাদা `blitz-options.*` microservice নেই), position subscription, result |
 | Marginal | `trading/marginal.py` | leverage/margin ভিত্তিক common engine — Forex, CFD, Stocks, Crypto, Commodities, ETF, Indices একই logic reuse করে (duplicate নেই) |
 | Portfolio | `portfolio/` | `portfolio.get-positions`, `portfolio.get-stats`, `position-changed`, exposure by asset |
 | History | `history/` | সব instrument-এর closed trade history + statistics |
@@ -139,3 +139,57 @@ iq.stop_streams()
 ```
 
 Reconnect হলে subscription গুলো নিজে থেকেই resubscribe হয় এবং session/account restore হয়।
+
+---
+
+## Trade placement — wire contracts
+
+তিনটা প্রোডাক্টের আসল wire contract (লগ থেকে ভেরিফাই করা):
+
+| Product | Microservice | Version | মূল ফিল্ড |
+|---|---|---|---|
+| Binary | `binary-options.open-option` | `1.0` | `option_type_id` 1, ladder-aligned `expired` |
+| Turbo | `binary-options.open-option` | `1.0` | `option_type_id` 3, 1–5 মিনিট ladder |
+| Blitz | `binary-options.open-option` | `2.0` | `option_type_id` **12**, `expired` **এবং** `expiration_size`, non-zero `value` |
+| Digital | `digital-options.place-digital-option` | `3.0` | `instrument_id` (স্ট্রিম থেকে আসা symbol), string `amount`, `instrument_index`, `asset_id` |
+
+### কেন আগের কোড fail করত
+
+* **Blitz → `no response for request_id`** — `blitz-options.open-option` নামে gateway-তে কোনো
+  microservice নেই; ফ্রেম accept হয়ে চুপচাপ drop হতো, তাই ২৫ সেকেন্ড পর timeout। এখন blitz
+  binary চ্যানেলেই যায় (`option_type_id=12`, v2.0) এবং `expired` + `value` দুটোই পাঠায়।
+* **Binary/Turbo → `asset is not available`** — asset-এর trading `schedule` চেক করা হতো না
+  (`enabled` true থাকলেই "open" ধরা হতো), blitz asset-এ তো `market_status` বসানোই হতো না।
+  ফলে বন্ধ মার্কেটে অর্ডার যেত আর সার্ভার reject করত। এখন schedule মানা হয় এবং catalog-এ
+  ৬০ সেকেন্ডের TTL আছে, তাই স্ট্যাটাস আর বাসি থাকে না।
+* **Digital → `instrument-quotes-generated not received`** — দুটো আলাদা বাগ। (১) অ্যাকাউন্টভেদে
+  প্ল্যাটফর্ম `digital-option-client-price-generated` পাঠায়, ওই ইভেন্টে subscribe করা হতো না।
+  (২) `routingFilters` **server-side**, কিন্তু ক্লায়েন্ট লোকালিও ফিল্টার মেলাত আর payload-এ
+  `kind`/`instrument_type`/`expiration_period` না থাকায় **প্রতিটা** ফ্রেম ফেলে দিত — এতে
+  candle আর position স্ট্রিমও নীরবে ভাঙা ছিল। এখন দুটো স্ট্রিমেই subscribe হয়, filter শুধু
+  contradiction-এ reject করে, আর স্ট্রিম না এলে `get-strike-list` fallback আছে।
+
+`place-digital-option` আর `open-option` দুটোই মাঝে মাঝে request_id echo না করে শুধু
+broadcast করে (`digital-option-placed` / `option-opened` / `option-rejected`) — সেগুলো
+`trading/option_events.py`-এর matcher দিয়ে correlate হয়, তাই আর timeout-এ ঝুলে থাকে না।
+
+### লগ থেকে ভেরিফাই করা ইভেন্ট ও সাবস্ক্রিপশন
+
+| কী | নাম / ভার্সন | নোট |
+|---|---|---|
+| Digital placement | `digital-options.place-digital-option` v3.0 | body ঠিক ৩টা ফিল্ড: `user_balance_id`, `instrument_id`, string `amount` |
+| Digital reply | `digital-option-placed` → `{id}`, `status: 2000` | numeric `2xxx` = accepted; request_id echo না করলেও correlate হয় |
+| Digital price | `digital-option-client-price-generated` | `prices[].strike` + `call/put.symbol` → সরাসরি `instrument_id` |
+| Position stream | `portfolio.position-changed` v3.0 | routingFilters: `user_id` + `user_balance_id` + `instrument_type` |
+| Position query | `portfolio.get-positions` v4.0 | `user_balance_id` + `instrument_types` + `offset`/`limit` |
+| Live candle | `candle-generated` | `open`/`close`/`min`/`max` + `ask`/`bid`/`phase` |
+
+`Candle`-এ এখন `ask`, `bid`, `phase` আর `spread` প্রপার্টি আছে (হিস্টোরিক্যাল ক্যান্ডেলে `None`)।
+অ্যাকাউন্ট সিলেক্ট করলেই `PositionManager` সেই `user_balance_id`-তে bind হয়ে যায়, তাই রেজাল্ট
+পোলিং কখনো অন্য ব্যালেন্স থেকে পজিশন পড়ে না।
+
+অফলাইনে সব ফিক্স যাচাই:
+
+```bash
+python3 tools/offline_check.py     # 25 checks, কোনো credential লাগে না
+```

@@ -112,7 +112,8 @@ class OrderManager:
                 order.state = OrderState.REJECTED
                 order.message = str(reason)
                 self._register(order)
-                raise OrderError(f"order rejected: {reason}", details=data)
+                raise OrderError(f"order rejected: {reason}{self._hint(reason)}",
+                                 details=data)
 
         inner = data.get("result") if isinstance(data.get("result"), dict) else data
         order = Order.from_payload(inner, **{
@@ -145,6 +146,24 @@ class OrderManager:
         self._register(order)
         self.log.info("order accepted: id=%s state=%s", order.order_id, order.state.value)
         return order
+
+    @staticmethod
+    def _hint(reason: Any) -> str:
+        """Turn an opaque gateway rejection into something actionable."""
+        text = str(reason or "").lower()
+        if "not available" in text or "not active" in text:
+            return (" - the market is closed or the asset is not enabled for "
+                    "this instrument type/account. Check "
+                    "iq.<product>.is_open(asset) and pick an open asset "
+                    "(OTC pairs stay open at weekends).")
+        if "insufficient" in text or "not enough" in text:
+            return " - not enough balance on the selected account."
+        if "amount" in text and ("min" in text or "max" in text):
+            return " - amount outside the asset's minimal/maximal bet."
+        if "expiration" in text or "expired" in text:
+            return (" - the expiry is not on the ladder the platform offers "
+                    "for this option type.")
+        return ""
 
     # ==================================================================
     # Registry
