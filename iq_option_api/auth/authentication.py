@@ -314,7 +314,8 @@ class Authenticator:
 
     def fetch_profile(self, timeout: Optional[float] = None) -> Dict[str, Any]:
         """``get-profile`` over the websocket. Updates the cached profile."""
-        payload = self.ws.call(MS_GET_PROFILE, "", version="1.0",
+        # Object body required by the current schema ("" -> parse error).
+        payload = self.ws.call(MS_GET_PROFILE, {}, version="1.0",
                                timeout=timeout or self.config.connection.request_timeout)
         if isinstance(payload, dict):
             self._profile = payload

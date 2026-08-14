@@ -81,7 +81,15 @@ def build_message(name: str, msg: Any, *, request_id: Optional[str] = None) -> D
 
 
 def build_microservice_call(name: str, body: Any, version: str = "1.0") -> Dict[str, Any]:
-    """Build the ``msg`` payload of a ``sendMessage`` frame."""
+    """Build the ``msg`` payload of a ``sendMessage`` frame.
+
+    ``body`` must be a JSON object (``dict``).  The InternalBilling gateway
+    no longer accepts an empty string body and answers with
+    ``parse error: expected { near offset 2 of ''`` - pass ``{}`` for
+    parameter-less calls instead of ``""`` / ``None``.
+    """
+    if body is None or body == "":
+        body = {}
     return {"name": name, "version": version, "body": body}
 
 

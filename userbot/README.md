@@ -50,7 +50,19 @@ pip install 'curl_cffi>=0.7'   # optional
 ```bash
 python livetest.py              # PRACTICE smoke test + $1 trades
 python livetest.py --no-trade   # connect / candles / payout only
+
+python quicktest.py             # পুরো API পয়েন্ট-টু-পয়েন্ট টেস্ট + $1 PRACTICE trades
+python quicktest.py --no-trade  # শুধু রিড-অনলি (login, balance, candles, price)
 ```
+
+`quicktest.py` এক রানে সবকিছু যাচাই করে — login/auth, PRACTICE↔REAL
+account switch + দুটো balance, market price/bid-ask/payout, ক্যান্ডেল
+(latest, নির্দিষ্ট সময়ের, নির্দিষ্ট range-এর, paged history), তারপর
+blitz/binary/turbo/digital + forex/CFD ট্রেড (open→floating pnl→close→result)
+এবং order/position/history — শেষে প্রতিটা চেকের pass/fail/skip, প্রতিটা
+ফেইলের error message, আর মোট গোনা সহ রিপোর্ট দেয়।
+Exit code: `0` = সব পাস, `1` = কিছু ফেইল, `2` = সেটআপ সমস্যা।
+ট্রেড শুধু PRACTICE অ্যাকাউন্টে হয় — আসল টাকা খরচ হবে না।
 
 `.env` এ যা সেট করা যায়:
 
