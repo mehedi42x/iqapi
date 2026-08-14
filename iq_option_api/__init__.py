@@ -25,6 +25,10 @@ Quick start::
         print(iq.balance(), iq.currency())
 """
 
+from .connection.compat import patch_thread_is_alive
+
+patch_thread_is_alive()
+
 from .account import AccountManager, BalanceManager
 from .auth import Authenticator, Session
 from .billing import BillingManager

@@ -23,12 +23,21 @@ from strategies.base import Signal  # noqa: E402
 from core import EnvConfig, MoneyManager, SessionRisk, parse_timeframe  # noqa: E402
 
 from iq_option_api.connection.browser import (  # noqa: E402
+    CHROME_USER_AGENT,
     FIREFOX_USER_AGENT,
     cookie_header,
     looks_like_challenge,
     origin_for,
     resolve_impersonate,
     ws_header_list,
+)
+from iq_option_api.connection.compat import (  # noqa: E402
+    patch_thread_is_alive,
+    thread_is_alive,
+)
+from iq_option_api.connection.websocket import (  # noqa: E402
+    WebSocketClient,
+    _is_fatal_transport_error,
 )
 from iq_option_api.config import ConnectionConfig  # noqa: E402
 
@@ -125,17 +134,42 @@ def main() -> int:
 
     print("browser / firefox handshake")
     check("firefox ua", "Firefox/" in FIREFOX_USER_AGENT and "Gecko/" in FIREFOX_USER_AGENT)
+    check("chrome ua", "Chrome/" in CHROME_USER_AGENT)
     check("origin wss", origin_for("wss://iqoption.com/echo/websocket") == "https://iqoption.com")
     check("cookie header", cookie_header({"ssid": "abc", "cf": "1"}) == "ssid=abc; cf=1")
     headers = ws_header_list(FIREFOX_USER_AGENT, "https://iqoption.com")
     check("ws ua header", any(h.startswith("User-Agent: ") and "Firefox/" in h for h in headers))
     check("ws origin header", "Origin: https://iqoption.com" in headers)
+    cookie_headers = ws_header_list(
+        FIREFOX_USER_AGENT, "https://iqoption.com", cookies={"ssid": "TESTSSID"}
+    )
+    check("ws cookie header", "Cookie: ssid=TESTSSID" in cookie_headers)
+    check("ws headers are minimal", not any("Sec-Fetch" in h for h in cookie_headers))
     check("impersonate off", resolve_impersonate("off") == "")
     check("impersonate firefox", resolve_impersonate("firefox") in {"firefox", "firefox147", "firefox144", "firefox135", "firefox133", ""})
     conn = ConnectionConfig()
     check("default ua is firefox", "Firefox/" in conn.user_agent)
     check("default impersonate", conn.impersonate == "firefox")
     check("connect timeout 30", conn.connect_timeout >= 30)
+
+    print("python 3.14 / isAlive compat")
+    patch_thread_is_alive()
+    import threading
+    check("Thread.isAlive patched", hasattr(threading.Thread, "isAlive"))
+    probe = threading.Thread(target=lambda: None)
+    check("thread_is_alive false before start", thread_is_alive(probe) is False)
+    check("fatal isAlive", _is_fatal_transport_error(
+        "'Thread' object has no attribute 'isAlive'"))
+    check("fatal unexpected kw", _is_fatal_transport_error(
+        "ws_connect() got an unexpected keyword argument 'on_open'"))
+    check("not fatal timeout", not _is_fatal_transport_error(
+        "connection to wss://iqoption.com timed out after 30s"))
+    isalive_err = WebSocketClient._connect_error(
+        ["wss://iqoption.com/echo/websocket"],
+        "'Thread' object has no attribute 'isAlive'",
+    )
+    check("isAlive error mentions upgrade",
+          "isAlive" in isalive_err and "websocket-client" in isalive_err)
 
     class _Resp:
         status_code = 403
@@ -164,6 +198,17 @@ def main() -> int:
     risk.register("loss", -1)
     ok, why = risk.allow()
     check("risk halt", (not ok) and "consecutive" in why, why)
+
+    print("connection / login-first")
+    try:
+        from test_connection import main as connection_main
+        if connection_main() != 0:
+            failed += 1
+            check("connection suite", False)
+        else:
+            check("connection suite", True)
+    except Exception as exc:  # noqa: BLE001
+        check("connection suite", False, str(exc))
 
     print()
     if failed:

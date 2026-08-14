@@ -5,6 +5,7 @@
 #
 websocket-client>=1.6.0
 requests>=2.28.0
-# Firefox TLS/JA3 impersonation — required to get past Cloudflare on the
-# IQ Option websocket.  Without it the handshake times out after ~20s.
+# Optional Firefox TLS/JA3 impersonation.  Not required on Termux — the
+# known-good path is requests + websocket-client (login first, then wss
+# with Cookie: ssid=…).  Install it if Cloudflare drops the handshake.
 curl_cffi>=0.7.0
